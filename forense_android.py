@@ -87,6 +87,19 @@ def get_prop(prop: str) -> str:
 # 1. PREREQUISITES
 # ---------------------------------------------------------------------------
 
+def _adb_platform_tools_version() -> int:
+    """Devuelve la version mayor de platform-tools, o 0 si no se puede determinar."""
+    try:
+        r = subprocess.run(["adb", "--version"], capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            s = line.strip()
+            if s.lower().startswith("version "):
+                return int(s.split()[1].split(".")[0])
+    except Exception:
+        pass
+    return 0
+
+
 def check_prerequisites() -> None:
     log("[*] Comprobando herramientas necesarias...")
     if shutil.which("adb") is None:
@@ -94,7 +107,18 @@ def check_prerequisites() -> None:
         log("        Instala android-tools / android-platform-tools.")
         sys.exit(1)
     ver = subprocess.run(["adb", "--version"], capture_output=True, text=True)
-    log(f"    OK - {ver.stdout.splitlines()[0] if ver.stdout else 'adb'}")
+    first_line = ver.stdout.splitlines()[0] if ver.stdout else "adb"
+    log(f"    OK - {first_line}")
+
+    pt = _adb_platform_tools_version()
+    if pt == 0:
+        log("    [AVISO] No se pudo determinar la version de platform-tools")
+    elif pt < 34:
+        log(f"    [AVISO] platform-tools v{pt} es antiguo (Android 14+ requiere >= 34 para")
+        log( "            'adb install --bypass-low-target-sdk-block'). El script usa fallback")
+        log( "            via 'adb shell pm install' que NO necesita adb moderno.")
+    else:
+        log(f"    [INFO] platform-tools v{pt} (>= 34, soporta --bypass-low-target-sdk-block)")
 
 # ---------------------------------------------------------------------------
 # 2. DEVICE
@@ -339,6 +363,70 @@ def _write_hashes() -> None:
 # 8. WHATSAPP EXTRACTION
 # ---------------------------------------------------------------------------
 
+def detect_oem_quirks(props: dict) -> dict:
+    """
+    Avisa sobre limitaciones conocidas del OEM/Android para la extraccion WhatsApp.
+    No bloquea nada — solo informa. Devuelve {"warnings": [...], "preflight": [...]}.
+    """
+    quirks = {"warnings": [], "preflight": []}
+    marca = (props.get("marca") or "").lower()
+    brand = (props.get("brand") or "").lower()
+    capa  = (props.get("capa")  or "").lower()
+    try:
+        sdk = int(props.get("sdk", "0") or 0)
+    except (ValueError, TypeError):
+        sdk = 0
+
+    # Familia BBK: Realme/OPPO/OnePlus/Vivo — tienen Permission Monitoring activado
+    bbk = ("realme", "oppo", "oneplus", "vivo")
+    if any(b in marca or b in brand or b in capa for b in bbk):
+        quirks["warnings"].append(
+            "Dispositivo BBK detectado (Realme/OPPO/OnePlus/Vivo): tiene 'Permission Monitoring' "
+            "que bloquea instalaciones con bypass via ADB."
+        )
+        quirks["preflight"].append(
+            "En el movil: Ajustes -> Ajustes adicionales -> Opciones de desarrollador -> "
+            "activar 'Desactivar monitor de permisos' (Disable Permission Monitoring) y luego "
+            "togglear USB Debugging off/on para aplicar el cambio."
+        )
+
+    # Huawei/Honor — EMUI bloquea adb backup desde EMUI 9
+    if "huawei" in marca or "honor" in marca or "emui" in capa or "harmony" in capa:
+        quirks["warnings"].append(
+            "Huawei/Honor detectado: EMUI bloquea o devuelve vacio el adb backup desde EMUI 9. "
+            "La extraccion legacy probablemente devolvera un .ab vacio o no mostrara el dialogo "
+            "de backup. Documentado por Oxygen Forensics y Belkasoft. Metodo no fiable aqui."
+        )
+
+    # Xiaomi/MIUI/HyperOS — restricciones de instalacion
+    if "xiaomi" in marca or "miui" in capa or "hyperos" in capa:
+        quirks["warnings"].append(
+            "Xiaomi/MIUI/HyperOS detectado: requiere activar 'Instalar via USB' y "
+            "'Depuracion USB (Ajustes de seguridad)' en Opciones de desarrollador "
+            "(necesita SIM y conexion a internet del operador chino o cuenta Mi)."
+        )
+        quirks["preflight"].append(
+            "Activar 'Install via USB' y 'USB debugging (Security settings)' en Opciones de desarrollador."
+        )
+
+    # Android 14+ (SDK 34+) — requiere bypass para targetSdk < 24
+    if sdk >= 34:
+        quirks["warnings"].append(
+            f"Android {props.get('android_ver','?')} (SDK {sdk}): exige targetSdk >= 24. "
+            "El APK legacy tiene targetSdk=19. El script intentara 3 estrategias de bypass "
+            "(adb install + flag, adb shell pm install + flag, adb install sin flag)."
+        )
+
+    # Android 12+ (SDK 31+) — excluye datos para apps targetSdk >= 31, pero el legacy tiene 19
+    if sdk >= 31:
+        quirks["warnings"].append(
+            "Android 12+: adb backup excluye datos de apps con targetSdk >= 31. "
+            "El APK legacy tiene targetSdk=19, por lo que sus datos SI se incluyen."
+        )
+
+    return quirks
+
+
 def _wa_prereqs() -> tuple[bool, str]:
     if not LEGACY_APK.exists():
         return False, f"No existe {LEGACY_APK}"
@@ -364,79 +452,204 @@ def _wa_pull_apks(apk_paths: list[str]) -> list[str] | None:
     local = []
     for p in apk_paths:
         dst = WA_APKS_DIR / Path(p).name
-        ok, _, err = adb_run(["pull", p, str(dst)], timeout=60)
+        ok, out, err = adb_run(["pull", p, str(dst)], timeout=60)
         if not ok:
-            log(f"[ERROR] No se pudo extraer {Path(p).name}: {err}")
+            log(f"[ERROR] adb pull {p} fallo: stdout='{out.strip()}' stderr='{err.strip()}'")
             return None
+        if not dst.exists() or dst.stat().st_size == 0:
+            log(f"[ERROR] adb pull devolvio OK pero el fichero local esta ausente o vacio: {dst}")
+            return None
+        log(f"[WA]      pulled {Path(p).name} ({dst.stat().st_size:,} bytes)")
         local.append(str(dst))
     return local
 
 
 def _wa_reboot_wait() -> bool:
-    log("[WA]  Reiniciando dispositivo...")
+    log("[WA]  Reiniciando dispositivo (refresca PackageManager tras uninstall -k)...")
     adb_run(["reboot"], timeout=10)
     time.sleep(25)
-    for _ in range(36):          # hasta ~3 min
+    log("[WA]  Esperando hasta 3 min a que el dispositivo vuelva...")
+    last_state = "?"
+    for attempt in range(36):
         time.sleep(5)
         ok, out, _ = adb_run(["devices"], timeout=10)
-        if ok:
-            for l in out.splitlines()[1:]:
-                parts = l.split()
-                if len(parts) >= 2 and parts[1] == "device":
-                    log("[WA]  Dispositivo listo")
-                    return True
-    log("[ERROR] Timeout esperando reinicio")
+        if not ok:
+            continue
+        for line in out.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            last_state = parts[1]
+            if last_state == "device":
+                log(f"[WA]  Dispositivo listo (tras ~{25 + (attempt + 1) * 5}s)")
+                return True
+            if last_state == "unauthorized":
+                log("[ERROR] Dispositivo NO autorizado tras reinicio.")
+                log("        Acepta la huella RSA en el movil y marca 'Permitir siempre desde este ordenador'.")
+                return False
+            # estados intermedios: offline, recovery, sideload, etc -> seguir esperando
+    log(f"[ERROR] Timeout (3 min) esperando que el dispositivo vuelva (ultimo estado: {last_state})")
     return False
 
 
 def _wa_install_legacy(sdk: str) -> bool:
-    ok, _, err = adb_run(
+    """
+    Instala LegacyWhatsApp.apk (targetSdk=19) en 3 estrategias escalonadas.
+    Loguea TODOS los intentos con su stdout/stderr.
+
+    Estrategia 1: adb install --bypass-low-target-sdk-block (host-side).
+                  Requiere platform-tools >= 34.
+    Estrategia 2: adb push + adb shell pm install --bypass-low-target-sdk-block
+                  (device-side parsing del flag). Funciona con cualquier adb del host
+                  siempre que Android >= 14. Sortea el host adb antiguo.
+    Estrategia 3: adb install sin bypass. Solo funciona en Android <= 13 donde
+                  el targetSdk bajo no esta bloqueado por sistema.
+    """
+    def _success(out: str, err: str) -> bool:
+        # pm install / adb install imprimen 'Success' en stdout cuando va bien.
+        return "Success" in out or "Success" in err
+
+    # --- Estrategia 1 ---
+    log("[WA]  Install legacy intento 1/3: adb install --bypass-low-target-sdk-block (host-side)")
+    ok1, out1, err1 = adb_run(
         ["install", "-r", "-d", "--bypass-low-target-sdk-block", str(LEGACY_APK)],
         timeout=60,
     )
-    if not ok:
-        log("[WA]  Reintentando sin --bypass-low-target-sdk-block...")
-        ok, _, err = adb_run(["install", "-r", "-d", str(LEGACY_APK)], timeout=60)
-    if not ok:
-        log(f"[ERROR] Fallo instalando APK legacy: {err}")
-    return ok
+    log(f"[WA]      rc_ok={ok1}  stdout='{out1.strip()}'  stderr='{err1.strip()}'")
+    if ok1 and _success(out1, err1):
+        log("[WA]  OK - APK legacy instalado (estrategia 1)")
+        return True
+
+    # --- Estrategia 2 ---
+    log("[WA]  Install legacy intento 2/3: adb push + adb shell pm install (device-side)")
+    remote = "/data/local/tmp/LegacyWhatsApp.apk"
+    okp, outp, errp = adb_run(["push", str(LEGACY_APK), remote], timeout=60)
+    log(f"[WA]      push rc_ok={okp}  stdout='{outp.strip()}'  stderr='{errp.strip()}'")
+    if okp:
+        ok2, out2, err2 = adb_run(
+            ["shell", "pm", "install", "-r", "-d", "--bypass-low-target-sdk-block", remote],
+            timeout=60,
+        )
+        log(f"[WA]      pm install rc_ok={ok2}  stdout='{out2.strip()}'  stderr='{err2.strip()}'")
+        adb_run(["shell", "rm", "-f", remote], timeout=10)
+        if ok2 and _success(out2, err2):
+            log("[WA]  OK - APK legacy instalado (estrategia 2, device-side bypass)")
+            return True
+    else:
+        log("[WA]      (no se intenta pm install porque el push fallo)")
+
+    # --- Estrategia 3 ---
+    log("[WA]  Install legacy intento 3/3: adb install SIN bypass (solo Android <= 13)")
+    ok3, out3, err3 = adb_run(["install", "-r", "-d", str(LEGACY_APK)], timeout=60)
+    log(f"[WA]      rc_ok={ok3}  stdout='{out3.strip()}'  stderr='{err3.strip()}'")
+    if ok3 and _success(out3, err3):
+        log("[WA]  OK - APK legacy instalado (estrategia 3, sin bypass)")
+        return True
+
+    log("[ERROR] No se pudo instalar el APK legacy con ninguna de las 3 estrategias.")
+    log("        Causas tipicas y como diagnosticarlas:")
+    log("        - Android 14+ BBK (Realme/OPPO/OnePlus/Vivo): activa 'Desactivar monitor de")
+    log("          permisos' en Opciones de desarrollador y togglea USB Debugging off/on.")
+    log("        - Android 14+ Xiaomi/MIUI: activa 'Install via USB' y 'USB debugging (Security")
+    log("          settings)' (requiere SIM o cuenta Mi).")
+    log("        - Android 14+ stock/Pixel: el flag --bypass-low-target-sdk-block deberia bastar.")
+    log("        - INSTALL_FAILED_VERIFICATION_FAILURE: desactiva 'Verify apps over USB' o")
+    log("          ejecuta 'adb shell settings put global verifier_verify_adb_installs 0'.")
+    log("        - INSTALL_FAILED_UPDATE_INCOMPATIBLE: el dispositivo aun tiene rastros del WA")
+    log("          anterior (firma distinta). Reinicia el dispositivo.")
+    return False
 
 
 def _wa_backup() -> bool:
     WA_DIR.mkdir(parents=True, exist_ok=True)
-    log("[WA]  Abriendo WhatsApp...")
-    adb_run(["shell", "am", "start", "-n", "com.whatsapp/.Main"], timeout=10)
-    log("[WA]  Esperando 30 segundos a que cargue y aceptes permisos en el movil...")
+    log("[WA]  Abriendo WhatsApp legacy...")
+    ok_open, out_open, err_open = adb_run(
+        ["shell", "am", "start", "-n", "com.whatsapp/.Main"], timeout=10
+    )
+    log(f"[WA]      am start rc_ok={ok_open}  stdout='{out_open.strip()}'  stderr='{err_open.strip()}'")
+
+    log("[WA]  Esperando 30 segundos a que cargue (si pide permisos, acepta en el movil)...")
     for i in range(30, 0, -1):
         print(f"\r[WA]  Arrancando WhatsApp... {i:2d}s ", end="", flush=True)
         time.sleep(1)
     print()
-    log("[WA]  Ejecutando adb backup...")
-    log("[WA]  >>> Aparecera un dialogo en el movil: pulsa 'Hacer copia de seguridad' (tienes 3 min) <<<")
+
+    log("[WA]  Ejecutando 'adb backup -f whatsapp.ab com.whatsapp'...")
+    log("[WA]  >>> En el movil DEBE aparecer un dialogo: pulsa 'Hacer copia de seguridad' (3 min de margen) <<<")
+    log("[WA]      Si NO aparece dialogo: el OEM probablemente lo bloquea (Huawei/EMUI suele hacerlo).")
+    log("[WA]      Si pide contrasena de backup: introducela en el movil (debe estar configurada antes).")
+
+    backup_stdout, backup_stderr = "", ""
+    proc = None
     try:
-        # Popen sin capturar stdout para no bloquear; el usuario interactua en el movil
         proc = subprocess.Popen(
             ["adb", "backup", "-f", str(WA_BACKUP), "com.whatsapp"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-        proc.wait(timeout=180)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        log("[ERROR] Timeout: no se acepto el backup en el dispositivo")
+        try:
+            out_b, err_b = proc.communicate(timeout=180)
+            backup_stdout = out_b.decode("utf-8", errors="replace").strip()
+            backup_stderr = err_b.decode("utf-8", errors="replace").strip()
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            log("[ERROR] Timeout (180s) en adb backup.")
+            log("        El dialogo no se acepto, no aparecio (OEM bloqueado), o el backup no progreso.")
+            return False
+    except FileNotFoundError:
+        log("[ERROR] 'adb' no encontrado al lanzar adb backup")
         return False
     except Exception as e:
-        log(f"[ERROR] adb backup: {e}")
+        log(f"[ERROR] Excepcion lanzando adb backup: {e}")
         return False
 
-    if not WA_BACKUP.exists() or WA_BACKUP.stat().st_size < 1024:
-        log("[ERROR] El backup esta vacio o no existe")
+    rc = proc.returncode if proc else -1
+    log(f"[WA]      adb backup rc={rc}")
+    if backup_stdout:
+        log(f"[WA]      stdout: {backup_stdout}")
+    if backup_stderr:
+        log(f"[WA]      stderr: {backup_stderr}")
+
+    if not WA_BACKUP.exists():
+        log(f"[ERROR] El archivo .ab no se ha creado: {WA_BACKUP}")
         return False
+
+    size = WA_BACKUP.stat().st_size
+    log(f"[WA]      tamano de whatsapp.ab: {size:,} bytes")
+
+    if size == 0:
+        log("[ERROR] El backup tiene 0 bytes — el OEM bloqueo el comando silenciosamente.")
+        log("        Tipico de Huawei/EMUI 9+, Samsung Knox restrictivo y algunos MIUI.")
+        return False
+    if size < 1024:
+        log(f"[ERROR] Backup demasiado pequeno ({size} bytes < 1024). Solo cabecera, sin datos.")
+        log("        Causas tipicas:")
+        log("        - Usuario cancelo el dialogo en el movil (pulso 'No copiar')")
+        log("        - WhatsApp legacy se instalo pero no se le concedieron permisos al arrancar")
+        log("        - El OEM crea el .ab pero no incluye datos (Huawei/Samsung en algunos modos)")
+        return False
+
     with open(WA_BACKUP, "rb") as f:
-        if not f.read(14).startswith(b"ANDROID BACKUP"):
-            log("[ERROR] Cabecera .ab invalida")
-            return False
+        header = f.read(24)
+    if not header.startswith(b"ANDROID BACKUP"):
+        log(f"[ERROR] Cabecera .ab invalida. Bytes leidos: {header!r}")
+        log("        El archivo no es un Android Backup valido.")
+        return False
 
-    log(f"[WA]  Backup valido ({WA_BACKUP.stat().st_size:,} bytes)")
+    # Detectar si el backup esta cifrado con contrasena (header tendra 'AES-256' tras la version)
+    # Formato cabecera: 'ANDROID BACKUP\n<version>\n<compressed>\n<encryption>\n'
+    try:
+        with open(WA_BACKUP, "rb") as f:
+            header_lines = f.read(200).split(b"\n")
+        if len(header_lines) >= 4:
+            enc = header_lines[3].decode("ascii", errors="replace").strip()
+            log(f"[WA]      cifrado del .ab: {enc or 'none'}")
+            if enc and enc.upper() not in ("NONE", ""):
+                log("[AVISO] El backup esta cifrado con contrasena. abe.jar fallara con clave vacia.")
+                log("        Reintenta sin contrasena de backup configurada en el movil.")
+    except Exception:
+        pass
+
+    log(f"[WA]  Backup valido ({size:,} bytes)")
     return True
 
 
@@ -470,69 +683,130 @@ def _wa_extract_ab() -> bool:
 
 
 def _wa_reinstall(local_apks: list[str]) -> bool:
-    log("[WA]  Restaurando WhatsApp original...")
-    adb_run(["shell", "pm", "uninstall", "-k", "com.whatsapp"], timeout=20)
-    ok, _, err = adb_run(["install-multiple", "-r", "-d"] + local_apks, timeout=120)
-    if not ok:
-        log("[WA]  Reintentando sin flag de downgrade...")
-        ok, _, err = adb_run(["install-multiple", "-r"] + local_apks, timeout=120)
-    if not ok:
-        log(f"[ERROR] No se pudo reinstalar WhatsApp: {err}")
+    log("[WA]  Restaurando WhatsApp original (install-multiple con APKs guardados)...")
+    ok_u, out_u, err_u = adb_run(["shell", "pm", "uninstall", "-k", "com.whatsapp"], timeout=20)
+    log(f"[WA]      uninstall del legacy rc_ok={ok_u}  stdout='{out_u.strip()}'  stderr='{err_u.strip()}'")
+
+    ok, out, err = adb_run(["install-multiple", "-r", "-d"] + local_apks, timeout=120)
+    log(f"[WA]      install-multiple (con -d) rc_ok={ok}  stdout='{out.strip()}'  stderr='{err.strip()}'")
+    if not ok or "Success" not in (out + err):
+        log("[WA]  Reintentando install-multiple sin flag de downgrade (-d)...")
+        ok, out, err = adb_run(["install-multiple", "-r"] + local_apks, timeout=120)
+        log(f"[WA]      install-multiple (sin -d) rc_ok={ok}  stdout='{out.strip()}'  stderr='{err.strip()}'")
+    if not ok or "Success" not in (out + err):
+        log("[WA]  Ultimo intento: install-multiple con --bypass-low-target-sdk-block...")
+        ok, out, err = adb_run(
+            ["install-multiple", "-r", "-d", "--bypass-low-target-sdk-block"] + local_apks,
+            timeout=120,
+        )
+        log(f"[WA]      install-multiple (bypass) rc_ok={ok}  stdout='{out.strip()}'  stderr='{err.strip()}'")
+    if not ok or "Success" not in (out + err):
+        log(f"[ERROR] install-multiple fallo despues de 3 intentos. stderr final: '{err.strip()}'")
+        log("        WhatsApp queda desinstalado en el dispositivo. APKs locales en:")
+        for p in local_apks:
+            log(f"        {p}")
+        log("        Para restaurar manualmente: adb install-multiple <ruta>/base.apk <split1> <split2>")
         return False
-    log("[WA]  WhatsApp restaurado")
+
+    # Verificacion: pm path debe encontrar com.whatsapp con tantos APKs como antes
+    paths = _wa_get_apk_paths()
+    if not paths:
+        log("[ERROR] install-multiple dijo Success pero pm path com.whatsapp esta vacio.")
+        return False
+    log(f"[WA]  WhatsApp restaurado y verificado ({len(paths)} APK(s) en el dispositivo)")
     return True
 
 
-def extract_whatsapp(sdk: str) -> dict:
+def extract_whatsapp(sdk: str, props: dict | None = None) -> dict:
     log("\n[*] Extraccion WhatsApp...")
+
+    # Avisos OEM/Android antes de tocar nada
+    if props:
+        quirks = detect_oem_quirks(props)
+        for w in quirks.get("warnings", []):
+            log(f"[WA]  AVISO: {w}")
+        for p in quirks.get("preflight", []):
+            log(f"[WA]  ACCION REQUERIDA EN EL MOVIL: {p}")
 
     ok, reason = _wa_prereqs()
     if not ok:
-        log(f"[WA]  Omitido: {reason}")
+        log(f"[WA]  Omitido (prereqs): {reason}")
         return {"status": "skipped", "reason": reason}
 
     if not _wa_installed():
-        msg = "WhatsApp no esta instalado"
-        log(f"[WA]  {msg}")
+        msg = "WhatsApp no esta instalado en el dispositivo"
+        log(f"[WA]  Omitido: {msg}")
         return {"status": "skipped", "reason": msg}
 
     apk_paths = _wa_get_apk_paths()
     if not apk_paths:
-        return {"status": "error", "reason": "No se pudieron obtener rutas APK"}
-    log(f"[WA]  {len(apk_paths)} APK(s) encontrados")
+        msg = "pm path com.whatsapp no devolvio rutas (posible bloqueo OEM)"
+        log(f"[ERROR] {msg}")
+        return {"status": "error", "reason": msg}
+    log(f"[WA]  {len(apk_paths)} APK(s) encontrados:")
+    for p in apk_paths:
+        log(f"      - {p}")
 
+    log("[WA]  Pulling APKs originales (para restauracion posterior)...")
     local_apks = _wa_pull_apks(apk_paths)
     if not local_apks:
-        return {"status": "error", "reason": "Error extrayendo APKs originales"}
+        msg = "Error pulling APKs originales — abortando ANTES de tocar el dispositivo"
+        log(f"[ERROR] {msg}")
+        return {"status": "error", "reason": msg}
+    log(f"[WA]  APKs originales guardados localmente en {WA_APKS_DIR}")
 
-    adb_run(["shell", "am", "force-stop", "com.whatsapp"], timeout=10)
+    log("[WA]  am force-stop com.whatsapp")
+    ok_fs, out_fs, err_fs = adb_run(
+        ["shell", "am", "force-stop", "com.whatsapp"], timeout=10
+    )
+    log(f"[WA]      rc_ok={ok_fs}  stdout='{out_fs.strip()}'  stderr='{err_fs.strip()}'")
 
-    ok2, _, err2 = adb_run(["shell", "pm", "uninstall", "-k", "com.whatsapp"], timeout=20)
-    if not ok2:
-        return {"status": "error", "reason": f"Error desinstalando WA: {err2}"}
+    log("[WA]  pm uninstall -k com.whatsapp (preserva /data/data/com.whatsapp/)")
+    ok2, out2, err2 = adb_run(["shell", "pm", "uninstall", "-k", "com.whatsapp"], timeout=20)
+    log(f"[WA]      rc_ok={ok2}  stdout='{out2.strip()}'  stderr='{err2.strip()}'")
+    if not ok2 or "Success" not in (out2 + err2):
+        msg = f"pm uninstall fallo: stdout='{out2.strip()}' stderr='{err2.strip()}'"
+        log(f"[ERROR] {msg}")
+        log("        En Huawei/EMUI esto es comun. WhatsApp NO se ha desinstalado, no hay que restaurar.")
+        return {"status": "error", "reason": msg}
 
     if not _wa_reboot_wait():
+        log("[WA]  Intentando restaurar WhatsApp tras fallo de reinicio...")
         _wa_reinstall(local_apks)
-        return {"status": "error", "reason": "Error reiniciando dispositivo"}
+        return {"status": "error", "reason": "Error reiniciando dispositivo (ver logs)"}
 
     if not _wa_install_legacy(sdk):
-        _wa_reinstall(local_apks)
-        return {"status": "error", "reason": "Error instalando APK legacy"}
+        log("[WA]  Install legacy fallo. Restaurando WhatsApp original...")
+        if not _wa_reinstall(local_apks):
+            log("[ERROR CRITICO] No se pudo restaurar WhatsApp original tampoco.")
+            log(f"                APKs originales estan en {WA_APKS_DIR}")
+        return {"status": "error", "reason": "No se pudo instalar APK legacy (ver intentos arriba)"}
 
     if not _wa_backup():
-        _wa_reinstall(local_apks)
-        return {"status": "error", "reason": "Error en adb backup"}
+        log("[WA]  adb backup fallo. Restaurando WhatsApp original...")
+        if not _wa_reinstall(local_apks):
+            log("[ERROR CRITICO] No se pudo restaurar WhatsApp original tampoco.")
+        return {"status": "error", "reason": "adb backup fallo (ver logs detallados arriba)"}
 
+    log("[WA]  Convirtiendo .ab -> .tar -> extracting...")
     extracted = _wa_extract_ab()
-    _wa_reinstall(local_apks)
+
+    log("[WA]  Restaurando WhatsApp original (siempre, exito o fallo de extraccion)...")
+    if not _wa_reinstall(local_apks):
+        log("[ERROR CRITICO] La restauracion de WhatsApp fallo. Revisa logs.")
 
     if not extracted:
-        return {"status": "error", "reason": "Error extrayendo backup"}
+        return {"status": "error", "reason": "Error extrayendo .ab (ver logs)"}
 
     db_files = list(WA_EXTRACT.rglob("*.db"))
     log(f"[WA]  Bases de datos encontradas: {len(db_files)}")
     for f in db_files:
         log(f"      - {f.relative_to(BASE)}")
+
+    if not db_files:
+        msg = "El backup se extrajo correctamente pero no contiene .db (datos vacios)"
+        log(f"[ERROR] {msg}")
+        return {"status": "error", "reason": msg}
 
     return {"status": "ok", "db_files": [str(f.relative_to(BASE)) for f in db_files]}
 
@@ -878,7 +1152,7 @@ def main() -> None:
         wa_result = {"status": "skipped", "reason": "Omitido con --skip-wa"}
         log("[WA]  Omitido con --skip-wa")
     else:
-        wa_result = extract_whatsapp(props["sdk"])
+        wa_result = extract_whatsapp(props["sdk"], props)
 
     # Inventario despues de toda la extraccion: el HTML muestra cifras reales
     num_files, total_size = _inventory()
