@@ -1,0 +1,29 @@
+# Datos extraidos — nunca subir al repo
+db/
+wa_backup/
+backup_movil/
+tmp_apks/
+wa_viewer.html
+*.ab
+*.tar
+*.sha256
+wa_extractor_debug.log
+log.txt
+
+# Script antiguo superado por forense_android.py
+wa_extractor.py
+
+# Mantener carpetas vacias si no hay archivos
+!abe/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
