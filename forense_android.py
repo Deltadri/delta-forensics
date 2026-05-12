@@ -517,6 +517,28 @@ def _wa_installed() -> bool:
     return "package:" in adb_shell(["pm", "path", "com.whatsapp"], timeout=10)
 
 
+def _wa_ghost_state() -> bool:
+    """Detecta el estado 'uninstalled-keep-data' (residuo de 'pm uninstall -k').
+
+    En este estado:
+      - 'pm path com.whatsapp'              -> vacio
+      - 'pm list packages -u | ... whatsapp -> SI lo lista
+        (-u incluye paquetes DELETE_KEEP_DATA)
+
+    Lo deja un run anterior que fallo entre el 'pm uninstall -k' y el
+    'install-multiple' de restauracion. Los datos en /data/data/com.whatsapp/
+    siguen intactos y se recuperan reinstalando los APKs originales
+    (via --restore-wa <ruta a apks_originales/>).
+    """
+    if _wa_installed():
+        return False
+    out = adb_shell(["pm", "list", "packages", "-u"], timeout=10)
+    for line in out.splitlines():
+        if line.strip() in ("package:com.whatsapp", "package:com.whatsapp.w4b"):
+            return True
+    return False
+
+
 def _wa_get_apk_paths() -> list[str]:
     out = adb_shell(["pm", "path", "com.whatsapp"], timeout=10)
     return [l.replace("package:", "").strip() for l in out.splitlines()
@@ -823,10 +845,14 @@ def _wa_reinstall(local_apks: list[str]) -> bool:
         )
     if not ok or "Success" not in (out + err):
         log(f"[ERROR] install-multiple fallo despues de 3 intentos. stderr final: '{err.strip()}'")
-        log("        WhatsApp queda desinstalado en el dispositivo. APKs locales en:")
+        log("        WhatsApp queda en estado uninstalled-keep-data en el dispositivo")
+        log("        (datos preservados en /data/data/com.whatsapp/). APKs locales en:")
         for p in local_apks:
             log(f"        {p}")
-        log("        Para restaurar manualmente: adb install-multiple <ruta>/base.apk <split1> <split2>")
+        apks_dir = str(Path(local_apks[0]).parent) if local_apks else "<ruta>"
+        log("        Para reintentar la restauracion (cualquiera de las dos):")
+        log(f"          A) python3 {Path(__file__).name} --restore-wa \"{apks_dir}\"")
+        log(f"          B) adb install-multiple -r -d \"{apks_dir}\"/*.apk")
         return False
 
     # Verificacion: pm path debe encontrar com.whatsapp con tantos APKs como antes
@@ -836,6 +862,40 @@ def _wa_reinstall(local_apks: list[str]) -> bool:
         return False
     log(f"[WA]  WhatsApp restaurado y verificado ({len(paths)} APK(s) en el dispositivo)")
     return True
+
+
+def _wa_restore_from_dir(apks_dir: str) -> bool:
+    """Reinstala WhatsApp desde una carpeta apks_originales de un run anterior.
+
+    Caso de uso: un run previo fallo a mitad de la restauracion (p.ej. el bug
+    de unauthorized de Android 14/15 + BBK) y dejo el paquete en estado
+    'uninstalled-keep-data'. Los datos en /data/data/com.whatsapp/ siguen ahi;
+    basta con reinstalar los APKs originales guardados para recuperar el acceso.
+    """
+    src = Path(apks_dir).expanduser().resolve()
+    if not src.is_dir():
+        log(f"[ERROR] No es un directorio: {src}")
+        return False
+    apks = sorted(str(p) for p in src.glob("*.apk"))
+    if not apks:
+        log(f"[ERROR] No hay ficheros .apk en {src}")
+        return False
+    log(f"[*] Restaurando WhatsApp desde {len(apks)} APK(s) en {src}:")
+    for a in apks:
+        log(f"    - {Path(a).name} ({Path(a).stat().st_size:,} bytes)")
+
+    if shutil.which("adb") is None:
+        log("[ERROR] 'adb' no encontrado en PATH.")
+        return False
+    subprocess.run(["adb", "start-server"], capture_output=True)
+
+    # Delegamos en _wa_reinstall: ya tiene pre-flight de auth, retry tras
+    # reautorizacion y los 3 intentos con flags escalonados.
+    if _wa_reinstall(apks):
+        log("[OK] WhatsApp restaurado. Abre la app en el movil para verificar tus chats.")
+        return True
+    log("[ERROR] No se pudo restaurar WhatsApp. Revisa los logs de arriba.")
+    return False
 
 
 def extract_whatsapp(sdk: str, props: dict | None = None) -> dict:
@@ -855,6 +915,17 @@ def extract_whatsapp(sdk: str, props: dict | None = None) -> dict:
         return {"status": "skipped", "reason": reason}
 
     if not _wa_installed():
+        if _wa_ghost_state():
+            msg = ("WhatsApp esta en estado 'uninstalled-keep-data' — residuo de un "
+                   "run anterior que fallo entre 'pm uninstall -k' y el reinstall. "
+                   "Los datos en /data/data/com.whatsapp/ siguen preservados.")
+            log(f"[WA]  {msg}")
+            log("[WA]  Recuperacion: busca la carpeta 'apks_originales' del run anterior:")
+            log(f"[WA]      ls -la ~/backup_movil/*/whatsapp/apks_originales/")
+            log("[WA]  Y reinstala con cualquiera de estas dos opciones:")
+            log(f"[WA]      A) python3 {Path(__file__).name} --restore-wa <ruta_a_apks_originales/>")
+            log( "[WA]      B) adb install-multiple -r -d <ruta_a_apks_originales>/*.apk")
+            return {"status": "error", "reason": msg}
         msg = "WhatsApp no esta instalado en el dispositivo"
         log(f"[WA]  Omitido: {msg}")
         return {"status": "skipped", "reason": msg}
@@ -1244,10 +1315,24 @@ def main() -> None:
         "--skip-wa", action="store_true",
         help="Omitir extraccion de WhatsApp (no desinstala ni reinicia el dispositivo)"
     )
+    parser.add_argument(
+        "--restore-wa", metavar="DIR",
+        help="Modo recuperacion: reinstala WhatsApp desde una carpeta 'apks_originales' "
+             "de un run anterior. Util cuando un run previo fallo entre uninstall y "
+             "reinstall y dejo WhatsApp en estado uninstalled-keep-data. No realiza el "
+             "backup forense — solo la restauracion. Ej: --restore-wa "
+             "~/backup_movil/2026-05-12_02-18-31/whatsapp/apks_originales"
+    )
     args = parser.parse_args()
 
     check_prerequisites()
     print()
+
+    if args.restore_wa:
+        # Modo recuperacion: solo restaura WhatsApp, no toca el resto del backup.
+        check_device()
+        ok = _wa_restore_from_dir(args.restore_wa)
+        sys.exit(0 if ok else 1)
 
     device_id = check_device()
 
