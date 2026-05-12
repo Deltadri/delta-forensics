@@ -34,10 +34,12 @@ DATOS     = BASE / "datos_forenses"
 INFORME   = BASE / "informe.html"
 HASHES    = BASE / "hashes.sha256"
 
-WA_DIR      = BASE / "whatsapp"
-WA_BACKUP   = WA_DIR / "whatsapp.ab"
-WA_EXTRACT  = WA_DIR / "extracted"
-WA_APKS_DIR = WA_DIR / "apks_originales"
+WA_DIR          = BASE / "whatsapp"
+WA_BACKUP       = WA_DIR / "whatsapp.ab"          # metodo legacy: backup .ab
+WA_EXTRACT      = WA_DIR / "extracted"            # metodo legacy: .ab descomprimido
+WA_APKS_DIR     = WA_DIR / "apks_originales"      # APKs originales (para restaurar)
+WA_EXTERNAL_DIR = WA_DIR / "external"             # metodo crypt15: pull de /sdcard/Android/media/com.whatsapp/
+WA_DECRYPTED    = WA_DIR / "decrypted"            # metodo crypt15: descifrados con la clave del usuario
 
 _HERE      = Path(__file__).parent
 LEGACY_DIR = _HERE / "legacy_apk"   # carpeta con uno o varios APKs candidatos
@@ -542,6 +544,109 @@ def detect_oem_quirks(props: dict) -> dict:
         )
 
     return quirks
+
+
+def _wa_detect_compatibility(props: dict) -> dict:
+    """Diagnostico previo: indica si el metodo LEGACY puede funcionar.
+
+    Lee del dispositivo:
+      - Version de Android (de props['sdk'])
+      - targetSdk del WhatsApp actualmente instalado (dumpsys package com.whatsapp)
+      - allowBackup del WhatsApp actual (flag en dumpsys)
+      - versionName del WhatsApp actual
+
+    Decide si el metodo legacy (instalar WA viejo + adb backup) tiene alguna
+    posibilidad de funcionar:
+      - Falla en Android >= 14 (SDK 34+) si WA actual tiene targetSdk >= 23
+        -> INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE bloquea el install legacy
+      - Falla siempre en Huawei EMUI 9+ (adb backup devuelve .ab vacio)
+      - Funciona en el resto (Android 6-13, OEMs no-EMUI, etc.)
+
+    Devuelve dict con todas las metricas + boolean 'legacy_viable' + 'reason' si no lo es.
+    """
+    result: dict = {
+        "legacy_viable": False,
+        "reason_legacy_blocked": None,
+        "wa_target_sdk": None,
+        "wa_allow_backup": None,
+        "wa_version": None,
+        "android_sdk": 0,
+        "android_version": props.get("android_ver", "?"),
+        "is_huawei_emui9": False,
+    }
+    try:
+        result["android_sdk"] = int(props.get("sdk", 0) or 0)
+    except (ValueError, TypeError):
+        pass
+
+    # Huawei/EMUI 9+ bloquea adb backup en silencio
+    marca = (props.get("marca") or "").lower()
+    capa  = (props.get("capa")  or "").lower()
+    if any(k in marca for k in ("huawei", "honor")) or "emui" in capa:
+        result["is_huawei_emui9"] = True
+
+    # Leer datos de WA desde el dispositivo
+    out = adb_shell(["dumpsys", "package", "com.whatsapp"], timeout=20)
+    if not out:
+        result["reason_legacy_blocked"] = (
+            "No se pudo ejecutar 'dumpsys package com.whatsapp' "
+            "(WhatsApp puede no estar instalado o el OEM bloquea pm/dumpsys)."
+        )
+        return result
+
+    import re
+    m = re.search(r"targetSdk=(\d+)", out)
+    if m:
+        result["wa_target_sdk"] = int(m.group(1))
+    m = re.search(r"versionName=(\S+)", out)
+    if m:
+        result["wa_version"] = m.group(1)
+
+    # allowBackup aparece como flag en dumpsys: si el manifest lo declara true
+    # (o no lo declara y el default es true), saldra como flag 'ALLOW_BACKUP'
+    # en la linea 'flags=[...]'. Si esta false, no aparece.
+    m = re.search(r"flags=\[([^\]]*)\]", out)
+    if m:
+        flags = m.group(1)
+        result["wa_allow_backup"] = "ALLOW_BACKUP" in flags
+
+    # ---- Reglas de viabilidad ----
+    if result["is_huawei_emui9"]:
+        result["reason_legacy_blocked"] = (
+            "Huawei/EMUI 9+ bloquea 'adb backup' silenciosamente y devuelve un .ab "
+            "vacio (solo cabecera, sin datos). Documentado por Oxygen Forensics y Belkasoft."
+        )
+        return result
+
+    if (result["wa_target_sdk"] is not None
+            and result["wa_target_sdk"] >= 23
+            and result["android_sdk"] >= 34):
+        result["reason_legacy_blocked"] = (
+            f"Android {result['android_version']} (SDK {result['android_sdk']}) + "
+            f"WhatsApp targetSdk={result['wa_target_sdk']}: el install del APK legacy "
+            f"(targetSdk=19) sera rechazado por Android con "
+            "INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE. No hay flag adb que lo sortee."
+        )
+        return result
+
+    result["legacy_viable"] = True
+    return result
+
+
+def _wa_log_diagnostic(diag: dict) -> None:
+    """Imprime el diagnostico de compatibilidad en bloque, formato tabla."""
+    log("[WA]  Diagnostico de compatibilidad:")
+    log(f"      Android version:   {diag['android_version']} (SDK {diag['android_sdk']})")
+    log(f"      WhatsApp version:  {diag.get('wa_version') or '?'}")
+    log(f"      WA targetSdk:      {diag.get('wa_target_sdk') if diag.get('wa_target_sdk') is not None else '?'}")
+    ab = diag.get("wa_allow_backup")
+    ab_str = "true" if ab is True else ("false" if ab is False else "?")
+    log(f"      WA allowBackup:    {ab_str}")
+    if diag["legacy_viable"]:
+        log("      Metodo LEGACY:     ✓ viable en este dispositivo")
+    else:
+        log("      Metodo LEGACY:     ✗ NO viable")
+        log(f"        Razon: {diag['reason_legacy_blocked']}")
 
 
 def _wa_legacy_apks() -> list[Path]:
@@ -1083,43 +1188,271 @@ def _wa_restore_from_dir(apks_dir: str) -> bool:
     return False
 
 
-def extract_whatsapp(sdk: str, props: dict | None = None) -> dict:
-    log("\n[*] Extraccion WhatsApp...")
+# ---------------------------------------------------------------------------
+# METODO B (crypt15): pull no-invasivo de los ficheros externos de WhatsApp
+# y descifrado opcional con la clave de 64 hex que aporta el usuario.
+# ---------------------------------------------------------------------------
 
-    # Avisos OEM/Android antes de tocar nada
-    if props:
-        quirks = detect_oem_quirks(props)
-        for w in quirks.get("warnings", []):
-            log(f"[WA]  AVISO: {w}")
-        for p in quirks.get("preflight", []):
-            log(f"[WA]  ACCION REQUERIDA EN EL MOVIL: {p}")
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
+
+def _adb_remote_dir_exists(remote: str) -> bool:
+    """Devuelve True si <remote> existe en el dispositivo como directorio."""
+    ok, _, _ = adb_run(["shell", "test", "-d", remote], timeout=10)
+    return ok
+
+
+def _wa_pull_external() -> dict:
+    """Pull no-invasivo de /sdcard/Android/media/com.whatsapp/WhatsApp/.
+
+    Esta ruta esta accesible desde adb sin root (es 'external private storage'
+    desde Android 11). Contiene:
+      - Databases/    -> backups msgstore-*.db.crypt15/14 cifrados + wa.db.crypt15
+      - Media/        -> fotos, videos, audios, voice notes (SIN cifrar)
+      - Backups/      -> formato viejo, si existe
+
+    Tambien intenta /sdcard/WhatsApp/ por compatibilidad con OEMs/versiones viejas.
+
+    Devuelve dict con status, crypt15_files (lista de {path, size, sha256}),
+    media_count, total_size.
+    """
+    log("[WA]  Pull crypt15 externo (no invasivo, sin desinstalar nada)...")
+    WA_EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
+
+    sources = [
+        # (label, remote path, destino local)
+        ("Databases (Android 11+)",
+         "/sdcard/Android/media/com.whatsapp/WhatsApp/Databases",
+         WA_EXTERNAL_DIR / "Android_media" / "Databases"),
+        ("Media (Android 11+)",
+         "/sdcard/Android/media/com.whatsapp/WhatsApp/Media",
+         WA_EXTERNAL_DIR / "Android_media" / "Media"),
+        ("Backups (Android 11+, si existe)",
+         "/sdcard/Android/media/com.whatsapp/WhatsApp/Backups",
+         WA_EXTERNAL_DIR / "Android_media" / "Backups"),
+        ("Databases (legacy /sdcard/WhatsApp/)",
+         "/sdcard/WhatsApp/Databases",
+         WA_EXTERNAL_DIR / "sdcard_WhatsApp" / "Databases"),
+        ("Media (legacy /sdcard/WhatsApp/)",
+         "/sdcard/WhatsApp/Media",
+         WA_EXTERNAL_DIR / "sdcard_WhatsApp" / "Media"),
+    ]
+
+    pulled_any = False
+    for label, remote, dst in sources:
+        if not _adb_remote_dir_exists(remote):
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        log(f"[WA]      {label}: pull {remote} -> {dst.name}/...")
+        ok, out, err = adb_run(["pull", remote, str(dst)], timeout=7200)
+        log(f"[WA]          rc_ok={ok} stderr='{err.strip()[:200]}'")
+        if ok and dst.exists():
+            pulled_any = True
+
+    if not pulled_any:
+        return {
+            "status": "error", "method": "crypt15",
+            "reason": ("No se encontraron carpetas externas de WhatsApp accesibles "
+                       "via adb. Posibles causas: WhatsApp nunca ha generado un backup "
+                       "local (recien instalado), o un OEM esta filtrando la ruta."),
+        }
+
+    # Inventario: lista los .crypt15/14 con su SHA-256
+    crypt_files: list[dict] = []
+    for f in sorted(WA_EXTERNAL_DIR.rglob("*.crypt15")):
+        if f.is_file():
+            crypt_files.append({
+                "path":   str(f.relative_to(BASE)),
+                "name":   f.name,
+                "size":   f.stat().st_size,
+                "sha256": _sha256_file(f),
+                "format": "crypt15",
+            })
+    for f in sorted(WA_EXTERNAL_DIR.rglob("*.crypt14")):
+        if f.is_file():
+            crypt_files.append({
+                "path":   str(f.relative_to(BASE)),
+                "name":   f.name,
+                "size":   f.stat().st_size,
+                "sha256": _sha256_file(f),
+                "format": "crypt14",
+            })
+
+    media_count = sum(1 for f in WA_EXTERNAL_DIR.rglob("*") if f.is_file()
+                      and not f.suffix.lower().startswith(".crypt"))
+    total_size = sum(f.stat().st_size for f in WA_EXTERNAL_DIR.rglob("*") if f.is_file())
+
+    log(f"[WA]      .crypt* encontrados: {len(crypt_files)}")
+    log(f"[WA]      Media files:         {media_count}")
+    log(f"[WA]      Tamano total externo: {_human(total_size)}")
+
+    return {
+        "status": "ok",
+        "method": "crypt15",
+        "crypt_files": crypt_files,
+        "media_count": media_count,
+        "total_size": total_size,
+    }
+
+
+def _wa_resolve_key(key_hex: str | None, key_file: str | None) -> tuple[str | None, str]:
+    """Devuelve (token_para_wadecrypt, descripcion_humana).
+
+    El token es lo que se pasa como primer argumento a `wadecrypt`. Puede ser:
+      - El propio hex de 64 chars (wa-crypt-tools lo detecta y lo trata como key)
+      - La ruta a un fichero 'encrypted_backup.key' o 'key'
+    Devuelve (None, '') si no hay clave -> solo se hace pull sin descifrar.
+    """
+    if key_file:
+        p = Path(key_file).expanduser()
+        if not p.is_file():
+            return None, f"--wa-key-file apunta a un fichero inexistente: {p}"
+        return str(p), f"keyfile {p}"
+    if key_hex:
+        cleaned = key_hex.strip().replace(" ", "").replace(":", "").replace("-", "")
+        if len(cleaned) == 64 and all(c in "0123456789abcdefABCDEF" for c in cleaned):
+            return cleaned, "clave de 64 hex"
+        return None, f"--wa-key no parece una clave hex de 64 chars (got len={len(cleaned)})"
+    return None, ""
+
+
+def _wa_decrypt_one(crypt_path: Path, dst_path: Path, key_token: str) -> bool:
+    """Invoca `wadecrypt` (wa-crypt-tools) para descifrar UN fichero.
+
+    Si wa-crypt-tools no esta instalado en el PATH del sistema, devuelve False
+    y loguea las instrucciones de instalacion.
+    """
+    if shutil.which("wadecrypt") is None:
+        log("[WA]      wadecrypt no esta en PATH. Instalalo con:")
+        log("[WA]          pip install wa-crypt-tools")
+        log("[WA]      Despues podras descifrar manualmente con:")
+        log(f"[WA]          wadecrypt <CLAVE_64HEX_O_KEYFILE> {crypt_path} {dst_path}")
+        return False
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        r = subprocess.run(
+            ["wadecrypt", key_token, str(crypt_path), str(dst_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=300,
+        )
+        if r.returncode == 0 and dst_path.exists() and dst_path.stat().st_size > 0:
+            log(f"[WA]      OK - {crypt_path.name} -> {dst_path.name} ({_human(dst_path.stat().st_size)})")
+            return True
+        log(f"[WA]      wadecrypt fallo: rc={r.returncode}")
+        if r.stderr.strip():
+            log(f"[WA]          stderr: {r.stderr.strip()[:300]}")
+        return False
+    except subprocess.TimeoutExpired:
+        log(f"[WA]      Timeout descifrando {crypt_path.name}")
+        return False
+    except Exception as e:
+        log(f"[WA]      Excepcion descifrando {crypt_path.name}: {e}")
+        return False
+
+
+def _wa_extract_crypt15(key_hex: str | None = None,
+                       key_file: str | None = None,
+                       props: dict | None = None) -> dict:
+    """Metodo B: pull no-invasivo + descifrado opcional.
+
+    El pull funciona SIEMPRE (cualquier Android 11+, cualquier OEM no-EMUI).
+    El descifrado solo se intenta si el usuario aporta clave (hex o keyfile).
+    """
+    pull = _wa_pull_external()
+    if pull.get("status") != "ok":
+        return pull
+
+    key_token, key_desc = _wa_resolve_key(key_hex, key_file)
+    pull["decrypted_files"] = []
+
+    if not key_token:
+        # Sin clave: solo preservamos los ficheros cifrados + Media + instrucciones
+        if key_desc:  # Hubo un --wa-key invalido
+            log(f"[WA]  AVISO: {key_desc}. Continuando sin descifrar.")
+        pull["decryption_instructions"] = (
+            "Para descifrar los .crypt15/14 necesitas la clave de 64 digitos hex\n"
+            "que el TITULAR del dispositivo puede ver en:\n"
+            "  WhatsApp -> Ajustes -> Chats -> Copia de seguridad ->\n"
+            "  Copia cifrada de extremo a extremo -> 'Ver clave de 64 digitos'\n\n"
+            "Con la clave en mano, descifra con wa-crypt-tools:\n"
+            "  pip install wa-crypt-tools\n"
+            "  wadecrypt <CLAVE_64_HEX> msgstore.db.crypt15 msgstore.db\n"
+            "  wadecrypt <CLAVE_64_HEX> wa.db.crypt15 wa.db\n\n"
+            "El resultado son ficheros SQLite plaintext que abres con:\n"
+            "  sqlite3, DB Browser for SQLite, o el wa_viewer.py de esta suite."
+        )
+        return pull
+
+    # Hay clave: intentar descifrar los principales
+    log(f"[WA]  Intentando descifrar con {key_desc}...")
+    WA_DECRYPTED.mkdir(parents=True, exist_ok=True)
+
+    targets = []  # (.crypt_path, .db_dst)
+    for cf in pull["crypt_files"]:
+        crypt_path = BASE / cf["path"]
+        name = cf["name"]
+        # msgstore.db.crypt15 -> msgstore.db ; wa.db.crypt15 -> wa.db ; msgstore-2026-..crypt15 -> msgstore-2026-...db
+        if name.endswith(".crypt15"):
+            dst_name = name[:-len(".crypt15")]
+        elif name.endswith(".crypt14"):
+            dst_name = name[:-len(".crypt14")]
+        else:
+            continue
+        targets.append((crypt_path, WA_DECRYPTED / dst_name))
+
+    for crypt_path, dst in targets:
+        log(f"[WA]      Descifrando {crypt_path.name}...")
+        if _wa_decrypt_one(crypt_path, dst, key_token):
+            pull["decrypted_files"].append({
+                "path":   str(dst.relative_to(BASE)),
+                "name":   dst.name,
+                "size":   dst.stat().st_size,
+                "sha256": _sha256_file(dst),
+            })
+
+    if pull["decrypted_files"]:
+        log(f"[WA]  Descifrados {len(pull['decrypted_files'])}/{len(targets)} ficheros.")
+    else:
+        log("[WA]  No se descifro ningun fichero. Revisa la clave y los logs.")
+    return pull
+
+
+def _wa_extract_legacy(sdk: str, props: dict | None = None) -> dict:
+    """Metodo A (legacy): desinstala WA moderno -> instala WA viejo via adb -> adb backup
+    -> reinstala WA moderno. Solo viable en Android <= 13 o con WA targetSdk < 23.
+
+    Devuelve dict con status / method / db_files / reason. El tramo destructivo
+    (entre pm uninstall y reinstall) esta envuelto en try/finally para
+    garantizar restauracion ante Ctrl-C / excepcion / cierre forzado.
+    """
     ok, reason = _wa_prereqs()
     if not ok:
         log(f"[WA]  Omitido (prereqs): {reason}")
-        return {"status": "skipped", "reason": reason}
+        return {"status": "skipped", "method": "legacy", "reason": reason}
 
     if not _wa_installed():
         if _wa_ghost_state():
             msg = ("WhatsApp esta en estado 'uninstalled-keep-data' — residuo de un "
-                   "run anterior que fallo entre 'pm uninstall -k' y el reinstall. "
-                   "Los datos en /data/data/com.whatsapp/ siguen preservados.")
+                   "run anterior que fallo entre 'pm uninstall -k' y el reinstall.")
             log(f"[WA]  {msg}")
             log("[WA]  Recuperacion: busca la carpeta 'apks_originales' del run anterior:")
             log(f"[WA]      ls -la ~/backup_movil/*/whatsapp/apks_originales/")
-            log("[WA]  Y reinstala con cualquiera de estas dos opciones:")
-            log(f"[WA]      A) python3 {Path(__file__).name} --restore-wa <ruta_a_apks_originales/>")
-            log( "[WA]      B) adb install-multiple -r -d <ruta_a_apks_originales>/*.apk")
-            return {"status": "error", "reason": msg}
+            log(f"[WA]      python3 {Path(__file__).name} --restore-wa <ruta_a_apks_originales/>")
+            return {"status": "error", "method": "legacy", "reason": msg}
         msg = "WhatsApp no esta instalado en el dispositivo"
         log(f"[WA]  Omitido: {msg}")
-        return {"status": "skipped", "reason": msg}
+        return {"status": "skipped", "method": "legacy", "reason": msg}
 
     apk_paths = _wa_get_apk_paths()
     if not apk_paths:
         msg = "pm path com.whatsapp no devolvio rutas (posible bloqueo OEM)"
         log(f"[ERROR] {msg}")
-        return {"status": "error", "reason": msg}
+        return {"status": "error", "method": "legacy", "reason": msg}
     log(f"[WA]  {len(apk_paths)} APK(s) encontrados:")
     for p in apk_paths:
         log(f"      - {p}")
@@ -1129,14 +1462,11 @@ def extract_whatsapp(sdk: str, props: dict | None = None) -> dict:
     if not local_apks:
         msg = "Error pulling APKs originales — abortando ANTES de tocar el dispositivo"
         log(f"[ERROR] {msg}")
-        return {"status": "error", "reason": msg}
+        return {"status": "error", "method": "legacy", "reason": msg}
     log(f"[WA]  APKs originales guardados localmente en {WA_APKS_DIR}")
 
     log("[WA]  am force-stop com.whatsapp")
-    ok_fs, out_fs, err_fs = adb_run(
-        ["shell", "am", "force-stop", "com.whatsapp"], timeout=10
-    )
-    log(f"[WA]      rc_ok={ok_fs}  stdout='{out_fs.strip()}'  stderr='{err_fs.strip()}'")
+    adb_run(["shell", "am", "force-stop", "com.whatsapp"], timeout=10)
 
     log("[WA]  pm uninstall -k com.whatsapp (preserva /data/data/com.whatsapp/)")
     ok2, out2, err2 = adb_run(["shell", "pm", "uninstall", "-k", "com.whatsapp"], timeout=20)
@@ -1144,55 +1474,61 @@ def extract_whatsapp(sdk: str, props: dict | None = None) -> dict:
     if not ok2 or "Success" not in (out2 + err2):
         msg = f"pm uninstall fallo: stdout='{out2.strip()}' stderr='{err2.strip()}'"
         log(f"[ERROR] {msg}")
-        log("        En Huawei/EMUI esto es comun. WhatsApp NO se ha desinstalado, no hay que restaurar.")
-        return {"status": "error", "reason": msg}
+        return {"status": "error", "method": "legacy", "reason": msg}
 
     # ========================================================================
     # TRAMO DESTRUCTIVO: WhatsApp esta desinstalado (con datos preservados).
     # Cualquier salida — exito, fallo, KeyboardInterrupt, excepcion — debe
-    # ejecutar _wa_reinstall(local_apks) en el finally. Si no se restaura,
-    # el movil queda en ghost state (datos sin APK).
+    # ejecutar _wa_reinstall(local_apks) en el finally.
     # ========================================================================
     restore_needed = True
-    result: dict = {"status": "error", "reason": "Interrumpido antes de definir resultado"}
+    result: dict = {"status": "error", "method": "legacy",
+                    "reason": "Interrumpido antes de definir resultado"}
     try:
         if not _wa_reboot_wait():
-            result = {"status": "error", "reason": "Error reiniciando dispositivo (ver logs)"}
+            result = {"status": "error", "method": "legacy",
+                      "reason": "Error reiniciando dispositivo (ver logs)"}
             return result
 
         if not _wa_install_legacy(sdk):
-            result = {"status": "error", "reason": "No se pudo instalar APK legacy (ver intentos arriba)"}
+            result = {"status": "error", "method": "legacy",
+                      "reason": "No se pudo instalar APK legacy (ver intentos arriba)"}
             return result
 
         if not _wa_backup():
-            result = {"status": "error", "reason": "adb backup fallo (ver logs detallados arriba)"}
+            result = {"status": "error", "method": "legacy",
+                      "reason": "adb backup fallo o .ab vacio (ver logs)"}
             return result
 
         log("[WA]  Convirtiendo .ab -> .tar -> extracting...")
         extracted = _wa_extract_ab()
         if not extracted:
-            result = {"status": "error", "reason": "Error extrayendo .ab (ver logs)"}
+            result = {"status": "error", "method": "legacy",
+                      "reason": "Error extrayendo .ab (ver logs)"}
             return result
 
         db_files = list(WA_EXTRACT.rglob("*.db"))
         log(f"[WA]  Bases de datos encontradas: {len(db_files)}")
         for f in db_files:
             log(f"      - {f.relative_to(BASE)}")
-
         if not db_files:
-            result = {"status": "error", "reason": "El backup se extrajo correctamente pero no contiene .db (datos vacios)"}
+            result = {"status": "error", "method": "legacy",
+                      "reason": "Backup extraido sin .db (datos vacios)"}
             return result
 
-        result = {"status": "ok", "db_files": [str(f.relative_to(BASE)) for f in db_files]}
+        result = {"status": "ok", "method": "legacy",
+                  "db_files": [str(f.relative_to(BASE)) for f in db_files]}
         return result
 
     except KeyboardInterrupt:
         log("\n[WA]  [Ctrl-C detectado] Restauro WhatsApp ANTES de salir...")
-        result = {"status": "error", "reason": "Interrumpido por el usuario (Ctrl-C)"}
-        raise  # propaga tras el finally
-    except BaseException as e:  # incluye SystemExit y exceptions raras
+        result = {"status": "error", "method": "legacy",
+                  "reason": "Interrumpido por el usuario (Ctrl-C)"}
+        raise
+    except BaseException as e:
         log(f"[WA]  Excepcion inesperada en tramo destructivo: {type(e).__name__}: {e}")
-        result = {"status": "error", "reason": f"Excepcion: {type(e).__name__}: {e}"}
+        result = {"status": "error", "method": "legacy",
+                  "reason": f"Excepcion: {type(e).__name__}: {e}"}
         raise
     finally:
         if restore_needed:
@@ -1201,11 +1537,84 @@ def extract_whatsapp(sdk: str, props: dict | None = None) -> dict:
                 if not _wa_reinstall(local_apks):
                     log("[ERROR CRITICO] La restauracion de WhatsApp fallo. Datos preservados,")
                     log(f"                APK locales en {WA_APKS_DIR}.")
-                    log(f"                Recuperacion manual: python3 {Path(__file__).name} \\")
-                    log(f"                  --restore-wa \"{WA_APKS_DIR}\"")
+                    log(f"                Recupera con: python3 {Path(__file__).name} --restore-wa \"{WA_APKS_DIR}\"")
             except BaseException as e:
                 log(f"[ERROR CRITICO] Excepcion durante restauracion: {type(e).__name__}: {e}")
-                log(f"                APKs en {WA_APKS_DIR}. Recupera manualmente con --restore-wa.")
+
+
+def extract_whatsapp(sdk: str, props: dict | None = None,
+                    method: str = "auto",
+                    key_hex: str | None = None,
+                    key_file: str | None = None) -> dict:
+    """Dispatcher de extraccion WhatsApp. Elige entre metodos:
+
+    - 'auto'    (default): diagnostica el dispositivo. Si legacy es viable lo
+                intenta; si falla, cae a crypt15. Si legacy NO es viable salta
+                directamente a crypt15.
+    - 'legacy': fuerza el metodo A (instalar WA viejo + adb backup + restaurar).
+                Avisa si el diagnostico dice que no es viable, pero lo intenta.
+    - 'crypt15': fuerza el metodo B (pull no-invasivo de /sdcard/Android/media/
+                com.whatsapp/WhatsApp/ + descifrado opcional con clave).
+
+    key_hex y key_file solo se usan en metodo crypt15: si se aportan, intenta
+    descifrar los .crypt15 con `wadecrypt` (de wa-crypt-tools).
+    """
+    log("\n[*] Extraccion WhatsApp...")
+
+    # Avisos OEM/Android
+    if props:
+        quirks = detect_oem_quirks(props)
+        for w in quirks.get("warnings", []):
+            log(f"[WA]  AVISO: {w}")
+        for p in quirks.get("preflight", []):
+            log(f"[WA]  ACCION REQUERIDA EN EL MOVIL: {p}")
+
+    # Diagnostico de compatibilidad del metodo legacy
+    diag = _wa_detect_compatibility(props or {})
+    _wa_log_diagnostic(diag)
+
+    # ---- Dispatcher por --wa-method ----
+    if method == "legacy":
+        if not diag["legacy_viable"]:
+            log("[WA]  ATENCION: --wa-method legacy forzado pero el diagnostico dice")
+            log(f"        que NO es viable. Razon: {diag['reason_legacy_blocked']}")
+            log("        Procediendo igual (tu lo pediste explicitamente)...")
+        result = _wa_extract_legacy(sdk, props)
+        result["diagnostic"] = diag
+        return result
+
+    if method == "crypt15":
+        log("[WA]  Metodo CRYPT15 forzado por --wa-method. Saltando legacy.")
+        result = _wa_extract_crypt15(key_hex=key_hex, key_file=key_file, props=props)
+        result["diagnostic"] = diag
+        return result
+
+    # ---- method == 'auto' ----
+    if diag["legacy_viable"]:
+        log("[WA]  Procediendo con metodo LEGACY (viable en este dispositivo)...")
+        legacy_result = _wa_extract_legacy(sdk, props)
+        if legacy_result.get("status") == "ok":
+            legacy_result["diagnostic"] = diag
+            return legacy_result
+        log(f"[WA]  Legacy fallo: {legacy_result.get('reason')}")
+        log("[WA]  Cayendo al metodo CRYPT15 como fallback (no invasivo)...")
+        crypt = _wa_extract_crypt15(key_hex=key_hex, key_file=key_file, props=props)
+        crypt["legacy_attempt"] = legacy_result
+        crypt["diagnostic"] = diag
+        return crypt
+
+    log("[WA]  Saltando metodo LEGACY (no viable). Usando CRYPT15...")
+    log("[WA]  Para configuracion optima del metodo CRYPT15, en el movil:")
+    log("[WA]    1) Activa 'Copia de seguridad cifrada E2E' en WA -> Ajustes -> Chats")
+    log("[WA]    2) Elige 'Usar clave de 64 digitos' (NO password)")
+    log("[WA]    3) Apunta la clave que sale en pantalla")
+    log("[WA]    4) Pulsa 'Hacer copia' para forzar un backup fresco con esa clave")
+    log("[WA]    5) Relanza con: --wa-method crypt15 --wa-key <CLAVE_64_HEX>")
+    log("[WA]  Si lanzaste sin clave, los .crypt15 quedaran preservados con sus")
+    log("[WA]  SHA-256 en el informe para descifrar mas tarde.")
+    result = _wa_extract_crypt15(key_hex=key_hex, key_file=key_file, props=props)
+    result["diagnostic"] = diag
+    return result
 
 # ---------------------------------------------------------------------------
 # HTML REPORT
@@ -1323,6 +1732,113 @@ def _bat_status(s: str) -> str:
 
 def _bat_health(s: str) -> str:
     return {"1":"Desconocida","2":"Buena","3":"Sobrecalentamiento","4":"Muerta","5":"Sobre voltaje","6":"Fallo","7":"Fria"}.get(s, s)
+
+
+def _build_wa_section(wa_result: dict) -> str:
+    """Renderiza la seccion HTML de WhatsApp segun el metodo usado y el resultado."""
+    status = wa_result.get("status")
+    method = wa_result.get("method", "")
+    diag   = wa_result.get("diagnostic", {})
+
+    # Cabecera de diagnostico (siempre presente si tenemos diag)
+    diag_html = ""
+    if diag:
+        ab = diag.get("wa_allow_backup")
+        ab_str = "true" if ab is True else ("false" if ab is False else "?")
+        legacy_str = "✓ viable" if diag.get("legacy_viable") else f"✗ no viable: {diag.get('reason_legacy_blocked','')}"
+        diag_html = (
+            '<div style="background:var(--bg2);border-left:3px solid var(--accent);'
+            'padding:.75rem 1rem;margin:.5rem 0 1rem 0;font-size:.85rem;color:var(--text-dim)">'
+            f'<strong>Diagnostico de compatibilidad</strong><br>'
+            f'Android: <code>{_esc(diag.get("android_version","?"))}</code> '
+            f'(SDK <code>{diag.get("android_sdk","?")}</code>) &middot; '
+            f'WA version: <code>{_esc(diag.get("wa_version") or "?")}</code> &middot; '
+            f'targetSdk: <code>{diag.get("wa_target_sdk") if diag.get("wa_target_sdk") is not None else "?"}</code> &middot; '
+            f'allowBackup: <code>{ab_str}</code><br>'
+            f'Metodo LEGACY: {_esc(legacy_str)}'
+            '</div>'
+        )
+
+    # -- Caso 1: legacy OK --
+    if status == "ok" and method == "legacy":
+        db_items = "".join(
+            f'<li>{_ICONS["database"]}<code>{_esc(f)}</code></li>'
+            for f in wa_result.get("db_files", [])
+        )
+        return (
+            f'<section><h2>{_ICONS["wa"]} WhatsApp '
+            f'<span class="badge" style="background:var(--green)">Extraido (legacy)</span></h2>'
+            f'{diag_html}'
+            f'<p style="margin-bottom:1rem;color:var(--text-dim);font-size:.9rem">'
+            f'Base de datos extraida mediante el metodo APK downgrade + adb backup. '
+            f'Los <code>.db</code> resultantes ya estan en plaintext y se pueden abrir '
+            f'con <code>sqlite3</code> o <code>wa_viewer.py</code>.</p>'
+            f'<ul class="archivos">{db_items}</ul></section>'
+        )
+
+    # -- Caso 2: crypt15 OK --
+    if status == "ok" and method == "crypt15":
+        crypt_rows = "".join(
+            f'<tr><td><code>{_esc(c["name"])}</code></td>'
+            f'<td>{_esc(_human(c["size"]))}</td>'
+            f'<td><code style="font-size:.75rem">{_esc(c["sha256"][:16])}…</code></td>'
+            f'<td><code>{_esc(c["format"])}</code></td></tr>'
+            for c in wa_result.get("crypt_files", [])
+        )
+        decrypted = wa_result.get("decrypted_files") or []
+        decrypted_html = ""
+        if decrypted:
+            decr_items = "".join(
+                f'<li>{_ICONS["database"]}<code>{_esc(f["path"])}</code> '
+                f'<span style="color:var(--text-dim);font-size:.85rem">({_esc(_human(f["size"]))})</span></li>'
+                for f in decrypted
+            )
+            decrypted_html = (
+                f'<h3 style="margin-top:1.5rem;color:var(--accent2)">'
+                f'Descifrados ({len(decrypted)})</h3>'
+                f'<ul class="archivos">{decr_items}</ul>'
+            )
+        instructions_html = ""
+        if wa_result.get("decryption_instructions"):
+            instr = _esc(wa_result["decryption_instructions"]).replace("\n", "<br>")
+            instructions_html = (
+                f'<h3 style="margin-top:1.5rem;color:var(--accent2)">'
+                f'Instrucciones de descifrado para el receptor</h3>'
+                f'<div style="background:var(--bg2);padding:1rem;border-radius:6px;'
+                f'font-size:.85rem;color:var(--text-dim);line-height:1.6">{instr}</div>'
+            )
+        return (
+            f'<section><h2>{_ICONS["wa"]} WhatsApp '
+            f'<span class="badge" style="background:var(--green)">Pulled (crypt15)</span></h2>'
+            f'{diag_html}'
+            f'<p style="margin-bottom:1rem;color:var(--text-dim);font-size:.9rem">'
+            f'Extraccion no invasiva de <code>/sdcard/Android/media/com.whatsapp/</code>. '
+            f'Media: <strong>{wa_result.get("media_count",0)}</strong> ficheros. '
+            f'Tamano total externo: <strong>{_esc(_human(wa_result.get("total_size",0)))}</strong>.</p>'
+            f'<div class="table-wrap"><table>'
+            f'<thead><tr><th>Archivo cifrado</th><th>Tamano</th><th>SHA-256 (primeros 16)</th><th>Formato</th></tr></thead>'
+            f'<tbody>{crypt_rows}</tbody></table></div>'
+            f'{decrypted_html}'
+            f'{instructions_html}'
+            f'</section>'
+        )
+
+    # -- Caso 3: error --
+    if status == "error":
+        return (
+            f'<section><h2>{_ICONS["wa"]} WhatsApp '
+            f'<span class="badge" style="background:#da3633">Error</span></h2>'
+            f'{diag_html}'
+            f'<p style="color:var(--text-dim)">{_esc(wa_result.get("reason",""))}</p></section>'
+        )
+
+    # -- Caso 4: skipped --
+    return (
+        f'<section><h2>{_ICONS["wa"]} WhatsApp '
+        f'<span class="badge" style="background:#6e7681">Omitido</span></h2>'
+        f'{diag_html}'
+        f'<p style="color:var(--text-dim)">{_esc(wa_result.get("reason",""))}</p></section>'
+    )
 
 
 def generate_html(device_id: str, props: dict, app_counts: dict,
@@ -1446,31 +1962,7 @@ def generate_html(device_id: str, props: dict, app_counts: dict,
         )
 
     # -- WhatsApp section --
-    wa_section = ""
-    if wa_result["status"] == "ok":
-        db_items = "".join(
-            f'<li>{_ICONS["database"]}<code>{_esc(f)}</code></li>'
-            for f in wa_result.get("db_files", [])
-        )
-        wa_section = (
-            f'<section><h2>{_ICONS["wa"]} WhatsApp '
-            f'<span class="badge" style="background:var(--green)">Extraido</span></h2>'
-            f'<p style="margin-bottom:1rem;color:var(--text-dim);font-size:.9rem">'
-            f'Base de datos extraida mediante tecnica de backup legacy.</p>'
-            f'<ul class="archivos">{db_items}</ul></section>'
-        )
-    elif wa_result["status"] == "error":
-        wa_section = (
-            f'<section><h2>{_ICONS["wa"]} WhatsApp '
-            f'<span class="badge" style="background:#da3633">Error</span></h2>'
-            f'<p style="color:var(--text-dim)">{_esc(wa_result.get("reason",""))}</p></section>'
-        )
-    else:
-        wa_section = (
-            f'<section><h2>{_ICONS["wa"]} WhatsApp '
-            f'<span class="badge" style="background:#6e7681">Omitido</span></h2>'
-            f'<p style="color:var(--text-dim)">{_esc(wa_result.get("reason",""))}</p></section>'
-        )
+    wa_section = _build_wa_section(wa_result)
 
     # -- Generated files section --
     file_items = "".join(
@@ -1534,6 +2026,29 @@ def main() -> None:
              "Sacalo de 'adb devices'. Sin este flag y con multiples dispositivos, "
              "el script aborta — proteccion forense contra actuar sobre el movil equivocado."
     )
+    parser.add_argument(
+        "--wa-method", choices=("auto", "legacy", "crypt15"), default="auto",
+        help="Metodo de extraccion WhatsApp: "
+             "'auto' (default) diagnostica el dispositivo y elige; "
+             "'legacy' fuerza el metodo clasico (instalar WA viejo + adb backup, "
+             "solo viable en Android <= 13 o WA con targetSdk < 23); "
+             "'crypt15' fuerza el metodo no invasivo (pull de /sdcard/Android/media/"
+             "com.whatsapp/, requiere clave de 64 hex para descifrar si quieres "
+             "los datos en claro)."
+    )
+    parser.add_argument(
+        "--wa-key", metavar="HEX64",
+        help="Clave de 64 caracteres hex para descifrar los .crypt15 con wa-crypt-tools. "
+             "El titular la saca en WhatsApp -> Ajustes -> Chats -> Copia de seguridad -> "
+             "Copia cifrada de extremo a extremo -> 'Ver clave de 64 digitos'. "
+             "Solo aplica a --wa-method crypt15 (o cuando auto cae a crypt15). "
+             "Ej: --wa-key 1234...abcd (acepta separadores ':', '-' o espacios; se normalizan)"
+    )
+    parser.add_argument(
+        "--wa-key-file", metavar="PATH",
+        help="Alternativa a --wa-key: ruta al fichero 'encrypted_backup.key' (crypt15) o "
+             "'key' (crypt14). Pasado tal cual al primer argumento de wadecrypt."
+    )
     args = parser.parse_args()
 
     check_prerequisites()
@@ -1569,7 +2084,12 @@ def main() -> None:
         wa_result = {"status": "skipped", "reason": "Omitido con --skip-wa"}
         log("[WA]  Omitido con --skip-wa")
     else:
-        wa_result = extract_whatsapp(props["sdk"], props)
+        wa_result = extract_whatsapp(
+            props["sdk"], props,
+            method=args.wa_method,
+            key_hex=args.wa_key,
+            key_file=args.wa_key_file,
+        )
 
     # Inventario despues de toda la extraccion: el HTML muestra cifras reales
     num_files, total_size = _inventory()

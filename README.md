@@ -6,13 +6,18 @@ Suite de herramientas forenses para dispositivos Android. Extrae datos del dispo
 
 ## ⚠️ Estado de compatibilidad real
 
-`forense_android.py` y la extraccion de WhatsApp **estan probados con exito unicamente en**:
+`forense_android.py` ofrece **dos metodos** de extraccion de WhatsApp y elige automaticamente:
 
-| Fabricante | Android | OS skin | Resultado | Notas |
-|---|---|---|---|---|
-| **OPPO** | **14** | ColorOS | ✅ **Funciona** completo (backup forense + extraccion WA) | Es el unico escenario que ha terminado con `msgstore.db` extraido limpio |
-| Realme C71 | 15 | ColorOS 15 (BBK) | ❌ NO funciona la extraccion WA | El install legacy falla por `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` (es comportamiento de Android 14+, no del OEM). El backup forense general SI completa. |
-| Huawei P Smart | 9 (EMUI 9) | EMUI | ❌ NO funciona la extraccion WA | EMUI bloquea silenciosamente `adb backup` y devuelve un `.ab` vacio. Backup forense general SI completa. |
+- **Metodo `legacy`** (clasico): desinstala WhatsApp moderno -> instala WhatsApp viejo via ADB -> `adb backup` -> reinstala el moderno. Solo funciona si el dispositivo es Android ≤ 13 o el WhatsApp actual tiene `targetSdk < 23`.
+- **Metodo `crypt15`** (no invasivo, fallback): solo hace `adb pull` de `/sdcard/Android/media/com.whatsapp/WhatsApp/` (DBs cifradas + Media sin cifrar). No desinstala nada. Para obtener las DBs en plaintext el titular tiene que activar "Copia E2E" en WhatsApp y aportar la clave de 64 hex (`--wa-key`).
+
+Estado real de los metodos por dispositivo probado:
+
+| Fabricante | Android | OS skin | Metodo legacy | Metodo crypt15 | Notas |
+|---|---|---|---|---|---|
+| **OPPO** | **14** | ColorOS | ✅ Funciona | ✅ Funciona (no probado todavia, debe funcionar) | El unico escenario con `msgstore.db` plaintext extraido via legacy |
+| Realme C71 | 15 | ColorOS 15 (BBK) | ❌ `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` | ✅ Pull funciona (no probado descifrado) | El backup forense general completa; WA requiere clave del titular |
+| Huawei P Smart | 9 (EMUI 9) | EMUI | ❌ `adb backup` vuelve vacio | 🟡 Probable que funcione el pull crypt15 | EMUI bloquea backup pero no el pull de /sdcard |
 
 **En la practica:**
 
@@ -168,12 +173,44 @@ Extrae almacenamiento, apps, estado del sistema y opcionalmente la base de datos
 > En Windows usa `python` en lugar de `python3`.
 
 ```bash
-# Backup completo + intento de extraccion WhatsApp
+# Backup completo + extraccion WhatsApp (modo auto: elige metodo segun diagnostico)
 python3 forense_android.py
 
 # Solo backup, sin tocar WhatsApp
 python3 forense_android.py --skip-wa
+
+# Forzar metodo legacy (instalar WA viejo + adb backup; solo Android <= 13)
+python3 forense_android.py --wa-method legacy
+
+# Forzar metodo crypt15 (no invasivo, pull de /sdcard/Android/media/com.whatsapp/)
+python3 forense_android.py --wa-method crypt15
+
+# crypt15 + descifrado automatico con la clave de 64 hex del titular
+python3 forense_android.py --wa-method crypt15 --wa-key 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+
+# Misma cosa pero leyendo la clave de un fichero (encrypted_backup.key)
+python3 forense_android.py --wa-method crypt15 --wa-key-file ~/wa_key.bin
+
+# Si tienes 2 moviles conectados, especifica cual:
+python3 forense_android.py --device 007519410a0c148c
+
+# Modo recuperacion: si un run anterior fallo a medias, restaura WhatsApp
+python3 forense_android.py --restore-wa ~/backup_movil/2026-05-12_XX/whatsapp/apks_originales
 ```
+
+### Como conseguir la clave de 64 hex (para `--wa-key`)
+
+Es algo que el **titular del dispositivo** tiene que hacer en su WhatsApp. **No se puede sacar de otra forma sin root**:
+
+1. Abre WhatsApp en el movil.
+2. Ajustes -> Chats -> Copia de seguridad.
+3. "Copia de seguridad cifrada de extremo a extremo" -> Activar.
+4. Elegir **"Usar clave de cifrado de 64 digitos"** (NO "Crear contrasena").
+5. Confirmar con PIN/huella del movil.
+6. WhatsApp muestra una clave de 64 caracteres hex. **Screenshot o anotar**.
+7. Pulsar "Hacer copia" (boton verde) para forzar un backup fresco con esa clave.
+
+Despues, pasale la clave al script con `--wa-key <CLAVE>` o `--wa-key-file <FICHERO>`. wa-crypt-tools (`pip install wa-crypt-tools`) se invoca automaticamente si esta en PATH.
 
 **Que genera:**
 
@@ -193,7 +230,13 @@ python3 forense_android.py --skip-wa
             └── wa.db             <- Contactos
 ```
 
-> **Nota sobre la extraccion WhatsApp:** El script desinstala temporalmente WhatsApp (manteniendo los datos con `-k`), instala una version antigua con `allowBackup=true`, ejecuta `adb backup` y restaura la version original. El proceso requiere que aceptes el dialogo de backup en el movil. Tus mensajes no se borran en ningun caso.
+> **Nota sobre la extraccion WhatsApp:**
+> El script tiene **2 metodos** y elige automaticamente segun el diagnostico:
+>
+> - **Metodo `legacy`**: desinstala WhatsApp moderno temporalmente (manteniendo los datos con `-k`), instala una version antigua con `allowBackup=true`, ejecuta `adb backup` y restaura la version original. Requiere que aceptes el dialogo de backup en el movil. Solo funciona en Android <= 13 o con WhatsApp `targetSdk < 23`.
+> - **Metodo `crypt15`**: NO desinstala nada. Solo `adb pull` de `/sdcard/Android/media/com.whatsapp/WhatsApp/`. Las DBs salen cifradas (.crypt15) y se descifran con la clave de 64 hex del titular usando `wa-crypt-tools` (`pip install wa-crypt-tools`). Es el unico metodo que funciona en Android 14+.
+>
+> En ambos metodos tus mensajes NO se borran. El metodo `legacy` desinstala y reinstala WhatsApp brevemente; el metodo `crypt15` no toca la app en absoluto.
 
 ---
 
