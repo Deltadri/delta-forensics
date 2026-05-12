@@ -513,6 +513,15 @@ def main():
     sidebar_html = ""
     panels_html  = ""
 
+    total_chats = len(chats)
+    total_msgs  = 0
+    bar_width   = 30
+
+    def _safe(s, n=32):
+        """Trunca a n chars y normaliza para que el terminal no se rompa con unicode."""
+        s = (str(s) or "")[:n]
+        return s.encode("ascii", "replace").decode().ljust(n)
+
     for i, chat in enumerate(chats):
         cid = chat["id"]
 
@@ -544,9 +553,20 @@ def main():
                 "caption": cap or "",
             })
 
-        print(f"    {chat['name'].encode('ascii','replace').decode()}: {len(msgs)} mensajes")
+        total_msgs += len(msgs)
         panels_html += build_chat_panel(chat, msgs, contacts, display=(i == 0))
 
+        # Barra de progreso in-place: se sobreescribe en la misma linea
+        done    = i + 1
+        pct     = done / total_chats
+        filled  = int(bar_width * pct)
+        bar     = "#" * filled + "-" * (bar_width - filled)
+        line = (f"\r  [{bar}] {done:>4}/{total_chats} ({pct*100:5.1f}%) "
+                f"- {total_msgs:>8,} msgs - {_safe(chat['name'])}")
+        print(line, end="", flush=True)
+
+    print()  # Salto de linea final tras la barra
+    print(f"  Procesados {total_chats} chats con {total_msgs:,} mensajes totales.")
     con.close()
 
     html = (
