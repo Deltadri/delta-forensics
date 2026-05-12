@@ -1569,6 +1569,29 @@ def extract_whatsapp(sdk: str, props: dict | None = None,
         for p in quirks.get("preflight", []):
             log(f"[WA]  ACCION REQUERIDA EN EL MOVIL: {p}")
 
+    # Pre-flight: si vas a usar crypt15 + clave, verifica wa-crypt-tools AHORA
+    # (antes de hacer ningun adb pull, que puede tardar minutos).
+    if (key_hex or key_file) and method in ("auto", "crypt15"):
+        if shutil.which("wadecrypt") is None:
+            log("[WA]  AVISO: pasaste --wa-key/--wa-key-file pero 'wadecrypt' no esta en PATH.")
+            log("        El descifrado NO se va a poder hacer. Para arreglarlo:")
+            log("            pip install wa-crypt-tools")
+            log("        O si tu sistema usa PEP 668 (Ubuntu 24.04+, Fedora 39+):")
+            log("            pipx install wa-crypt-tools")
+            log("            # o bien:")
+            log("            python3 -m venv /tmp/wacrypt && source /tmp/wacrypt/bin/activate")
+            log("            pip install wa-crypt-tools")
+            log("        Continuando IGUAL: los .crypt15 se preservaran cifrados con sus")
+            log("        SHA-256, y podras descifrarlos manualmente despues con wadecrypt.")
+        else:
+            # Mejor avisar de que esta listo (para que el usuario sepa que va a funcionar)
+            try:
+                r = subprocess.run(["wadecrypt", "--help"], capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    log("[WA]  wadecrypt detectado en PATH: descifrado automatico habilitado")
+            except Exception:
+                pass
+
     # Diagnostico de compatibilidad del metodo legacy
     diag = _wa_detect_compatibility(props or {})
     _wa_log_diagnostic(diag)
