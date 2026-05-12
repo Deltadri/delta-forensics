@@ -83,6 +83,77 @@ def adb_run(args: list, timeout: int = 60) -> tuple[bool, str, str]:
 def get_prop(prop: str) -> str:
     return adb_shell(["getprop", prop])
 
+
+def _adb_authorized() -> bool:
+    """Probe real: ejecuta 'adb shell echo ok' y comprueba autorizacion efectiva.
+
+    No basta con 'adb devices' diciendo 'device' — en Android 14/15 (sobre todo
+    Realme/OPPO/OnePlus/Vivo) el estado puede reportarse 'device' por cache de
+    adbd 5-10 s despues de un reboot mientras la autorizacion USB ya esta
+    invalidada. Solo un comando real lo confirma.
+    """
+    try:
+        r = subprocess.run(
+            ["adb", "shell", "echo", "ok"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=10,
+        )
+    except Exception:
+        return False
+    combined = (r.stdout + r.stderr).lower()
+    if "unauthorized" in combined or "device offline" in combined or "no devices" in combined:
+        return False
+    return r.returncode == 0 and "ok" in r.stdout
+
+
+def _wait_for_auth(context: str = "", timeout_s: int = 90) -> bool:
+    """Bloquea hasta que el dispositivo esta autorizado para comandos adb.
+
+    Si ya lo esta, devuelve True inmediatamente (sin tocar nada — esencial para
+    no penalizar Android 8-13 donde la autorizacion no se pierde).
+
+    Si no lo esta, reinicia el adb server (forza el redialogo RSA), muestra
+    una cuenta atras al usuario, y polleea cada 2 s hasta autorizar o timeout.
+
+    Util tras 'adb reboot' (Android 14/15 + BBK invalidan la autorizacion) o
+    cuando un comando intermedio reporta 'device unauthorized'.
+    """
+    if _adb_authorized():
+        return True
+
+    label = f" ({context})" if context else ""
+    log(f"[WA]  Dispositivo NO autorizado{label}.")
+    log("        Reinicio adb server para forzar reaparicion del dialogo RSA en el movil...")
+    try:
+        subprocess.run(["adb", "kill-server"], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    time.sleep(2)
+    try:
+        subprocess.run(["adb", "start-server"], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    time.sleep(2)
+
+    log("[WA]  En el movil: acepta la huella RSA y marca 'Permitir siempre desde este ordenador'.")
+    log(f"[WA]  Esperando hasta {timeout_s}s a que aceptes el dialogo...")
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _adb_authorized():
+            print()
+            log("[WA]  Dispositivo autorizado. Continuando...")
+            return True
+        remaining = int(deadline - time.time())
+        print(f"\r[WA]  Esperando autorizacion... {remaining:3d}s ", end="", flush=True)
+        time.sleep(2)
+    print()
+    log(f"[ERROR] Timeout ({timeout_s}s) esperando autorizacion del dispositivo.")
+    log("        Si el dialogo nunca aparecio: en el movil ve a Opciones de desarrollador")
+    log("        -> 'Revocar autorizaciones de depuracion USB' y reconecta el cable.")
+    return False
+
+
 # ---------------------------------------------------------------------------
 # 1. PREREQUISITES
 # ---------------------------------------------------------------------------
@@ -416,6 +487,11 @@ def detect_oem_quirks(props: dict) -> dict:
             "El APK legacy tiene targetSdk=19. El script intentara 3 estrategias de bypass "
             "(adb install + flag, adb shell pm install + flag, adb install sin flag)."
         )
+        quirks["preflight"].append(
+            "Android 14/15 invalida la autorizacion USB tras 'adb reboot' si no marcaste "
+            "'Permitir siempre desde este ordenador' al aceptar la huella RSA. Asegurate "
+            "de tenerla marcada antes de empezar (o ten el movil a mano para reaceptar)."
+        )
 
     # Android 12+ (SDK 31+) — excluye datos para apps targetSdk >= 31, pero el legacy tiene 19
     if sdk >= 31:
@@ -470,24 +546,41 @@ def _wa_reboot_wait() -> bool:
     time.sleep(25)
     log("[WA]  Esperando hasta 3 min a que el dispositivo vuelva...")
     last_state = "?"
+    stable_device = 0  # lecturas consecutivas en estado 'device'
     for attempt in range(36):
         time.sleep(5)
         ok, out, _ = adb_run(["devices"], timeout=10)
         if not ok:
+            stable_device = 0
             continue
+        current_state = ""
         for line in out.splitlines()[1:]:
             parts = line.split()
             if len(parts) < 2:
                 continue
-            last_state = parts[1]
-            if last_state == "device":
-                log(f"[WA]  Dispositivo listo (tras ~{25 + (attempt + 1) * 5}s)")
-                return True
-            if last_state == "unauthorized":
-                log("[ERROR] Dispositivo NO autorizado tras reinicio.")
-                log("        Acepta la huella RSA en el movil y marca 'Permitir siempre desde este ordenador'.")
-                return False
-            # estados intermedios: offline, recovery, sideload, etc -> seguir esperando
+            current_state = parts[1]
+            last_state = current_state
+            break
+
+        if current_state == "device":
+            stable_device += 1
+            # No basta con la primera lectura 'device': Android 14/15 + BBK pueden
+            # reportar 'device' por cache de adbd unos segundos antes de pasar a
+            # 'unauthorized'. Exigimos 2 lecturas (~5s aparte) + probe real.
+            if stable_device >= 2:
+                if _adb_authorized():
+                    log(f"[WA]  Dispositivo listo y autorizado (tras ~{25 + (attempt + 1) * 5}s)")
+                    return True
+                # adb reporta 'device' pero los comandos fallan: la autorizacion
+                # USB se invalido durante el reboot. Pedimos reautorizar.
+                log("[WA]  Estado 'device' pero adbd rechaza comandos (auth invalidada en reboot).")
+                return _wait_for_auth("post-reboot")
+        elif current_state == "unauthorized":
+            log("[WA]  Estado 'unauthorized' tras reinicio.")
+            return _wait_for_auth("post-reboot")
+        else:
+            # offline, recovery, sideload, etc -> seguir esperando
+            stable_device = 0
     log(f"[ERROR] Timeout (3 min) esperando que el dispositivo vuelva (ultimo estado: {last_state})")
     return False
 
@@ -684,22 +777,50 @@ def _wa_extract_ab() -> bool:
 
 def _wa_reinstall(local_apks: list[str]) -> bool:
     log("[WA]  Restaurando WhatsApp original (install-multiple con APKs guardados)...")
+
+    # Pre-flight: aseguramos autorizacion antes de tocar adb. En Android 14/15
+    # + BBK la autorizacion USB puede haberse invalidado durante el flujo
+    # (reboot, cambio de modo USB, etc.) sin que adb devices lo refleje aun.
+    if not _wait_for_auth("antes de install-multiple"):
+        log("[ERROR] No se obtuvo autorizacion para reinstalar WhatsApp.")
+        log("        APKs originales locales en:")
+        for p in local_apks:
+            log(f"        {p}")
+        log("        Para restaurar manualmente: adb install-multiple <ruta>/base.apk <split1> <split2>")
+        return False
+
     ok_u, out_u, err_u = adb_run(["shell", "pm", "uninstall", "-k", "com.whatsapp"], timeout=20)
     log(f"[WA]      uninstall del legacy rc_ok={ok_u}  stdout='{out_u.strip()}'  stderr='{err_u.strip()}'")
 
-    ok, out, err = adb_run(["install-multiple", "-r", "-d"] + local_apks, timeout=120)
-    log(f"[WA]      install-multiple (con -d) rc_ok={ok}  stdout='{out.strip()}'  stderr='{err.strip()}'")
+    def _is_auth_error(stderr: str) -> bool:
+        e = stderr.lower()
+        return ("unauthorized" in e
+                or "device offline" in e
+                or "no devices/emulators" in e
+                or "device not found" in e)
+
+    def _try_install(args: list, label: str) -> tuple[bool, str, str]:
+        """Ejecuta install-multiple y, si falla por auth, intenta reautorizar
+        una sola vez y reintenta el MISMO comando (cambiar flags no arregla auth)."""
+        ok_i, out_i, err_i = adb_run(args, timeout=120)
+        log(f"[WA]      install-multiple ({label}) rc_ok={ok_i}  stdout='{out_i.strip()}'  stderr='{err_i.strip()}'")
+        if not ok_i and _is_auth_error(err_i):
+            log(f"[WA]      Error de autorizacion durante '{label}', reautorizando...")
+            if _wait_for_auth(f"mid-{label}"):
+                ok_i, out_i, err_i = adb_run(args, timeout=120)
+                log(f"[WA]      install-multiple ({label}, retry tras auth) rc_ok={ok_i}  stdout='{out_i.strip()}'  stderr='{err_i.strip()}'")
+        return ok_i, out_i, err_i
+
+    ok, out, err = _try_install(["install-multiple", "-r", "-d"] + local_apks, "con -d")
     if not ok or "Success" not in (out + err):
         log("[WA]  Reintentando install-multiple sin flag de downgrade (-d)...")
-        ok, out, err = adb_run(["install-multiple", "-r"] + local_apks, timeout=120)
-        log(f"[WA]      install-multiple (sin -d) rc_ok={ok}  stdout='{out.strip()}'  stderr='{err.strip()}'")
+        ok, out, err = _try_install(["install-multiple", "-r"] + local_apks, "sin -d")
     if not ok or "Success" not in (out + err):
         log("[WA]  Ultimo intento: install-multiple con --bypass-low-target-sdk-block...")
-        ok, out, err = adb_run(
+        ok, out, err = _try_install(
             ["install-multiple", "-r", "-d", "--bypass-low-target-sdk-block"] + local_apks,
-            timeout=120,
+            "bypass",
         )
-        log(f"[WA]      install-multiple (bypass) rc_ok={ok}  stdout='{out.strip()}'  stderr='{err.strip()}'")
     if not ok or "Success" not in (out + err):
         log(f"[ERROR] install-multiple fallo despues de 3 intentos. stderr final: '{err.strip()}'")
         log("        WhatsApp queda desinstalado en el dispositivo. APKs locales en:")
