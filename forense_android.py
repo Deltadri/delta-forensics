@@ -2036,6 +2036,13 @@ def main() -> None:
         help="Omitir extraccion de WhatsApp (no desinstala ni reinicia el dispositivo)"
     )
     parser.add_argument(
+        "--only-wa", action="store_true",
+        help="Salta las fases pesadas (almacenamiento, lista de apps, estado del "
+             "sistema) y va directo a WhatsApp. Util para extracciones rapidas o "
+             "para reintentos de WhatsApp tras un fallo. Sigue generando informe "
+             "HTML + hashes SHA-256 para los ficheros de WA. Incompatible con --skip-wa."
+    )
+    parser.add_argument(
         "--restore-wa", metavar="DIR",
         help="Modo recuperacion: reinstala WhatsApp desde una carpeta 'apks_originales' "
              "de un run anterior. Util cuando un run previo fallo entre uninstall y "
@@ -2074,6 +2081,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.skip_wa and args.only_wa:
+        print("[ERROR] --skip-wa y --only-wa son incompatibles. Elige uno.")
+        sys.exit(2)
+
     check_prerequisites()
     print()
 
@@ -2091,16 +2102,28 @@ def main() -> None:
 
     print()
     print("=" * 65)
-    print(" BACKUP + INFORME FORENSE ANDROID")
+    if args.only_wa:
+        print(" SOLO WhatsApp (--only-wa: backup forense general omitido)")
+    else:
+        print(" BACKUP + INFORME FORENSE ANDROID")
     print(f" Dispositivo: {device_id}")
     print(f" Destino:     {BASE}")
     print("=" * 65)
     print()
 
-    props      = identify_device()        # [1/8]
-    pull_storage()                        # [2/8]
-    app_counts = list_apps()             # [3/8]
-    state      = system_state()          # [4/8]
+    props = identify_device()        # [1/8] siempre — necesario para diagnostico WA
+    if args.only_wa:
+        log("[2/8] Omitido por --only-wa (sin pull de almacenamiento)")
+        log("[3/8] Omitido por --only-wa (sin listado de apps)")
+        log("[4/8] Omitido por --only-wa (sin estado del sistema)")
+        app_counts = {"apps_todas.txt": 0, "apps_usuario.txt": 0,
+                      "apps_sistema.txt": 0, "apps_deshabilitadas.txt": 0}
+        state = {"battery": {}, "cpu_model": "", "num_cores": 0,
+                 "ram_total": "", "ip_wifi": "", "num_procs": 0}
+    else:
+        pull_storage()               # [2/8]
+        app_counts = list_apps()     # [3/8]
+        state      = system_state()  # [4/8]
 
     log("[5/8] Extrayendo WhatsApp...")
     if args.skip_wa:

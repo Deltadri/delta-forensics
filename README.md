@@ -211,6 +211,7 @@ El script diagnostica el dispositivo, te dice que metodo va a usar, y te explica
 | Flag | Por defecto | Descripcion |
 |---|---|---|
 | `--skip-wa` | desactivado | Omite la fase 5/8 entera (sin tocar WhatsApp). El resto del backup forense corre normal. |
+| `--only-wa` | desactivado | Lo contrario: salta las fases pesadas (2/8 almacenamiento, 3/8 apps, 4/8 estado) y va directo a WhatsApp. Util para reintentos rapidos. Incompatible con `--skip-wa`. |
 | `--wa-method {auto,legacy,crypt15}` | `auto` | Elige metodo de extraccion WhatsApp. Ver tabla abajo. |
 | `--wa-key HEX64` | — | Clave de 64 hex para descifrar `.crypt15`. Acepta `:`, `-`, espacios como separadores. Ej: `--wa-key 1234...abcd`. |
 | `--wa-key-file PATH` | — | Alternativa a `--wa-key`: ruta al fichero `encrypted_backup.key` (binario). |
@@ -264,6 +265,13 @@ Te baja los `.crypt15` cifrados + Media en claro + hashes SHA-256 + instruccione
 ```bash
 python3 forense_android.py --skip-wa
 ```
+
+**Solo me interesa WhatsApp, sáltate todo lo demás (extraccion rapida o reintento):**
+
+```bash
+python3 forense_android.py --only-wa --wa-method crypt15 --wa-key <CLAVE_64HEX>
+```
+El script salta las fases 2/8 (almacenamiento), 3/8 (apps) y 4/8 (estado del sistema). Sigue generando el informe HTML y los hashes SHA-256 para los ficheros de WhatsApp. Tarda 30 s en vez de 10-15 min.
 
 **Tengo varios moviles conectados:**
 
