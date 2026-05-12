@@ -418,10 +418,10 @@ Abre el HTML generado en Chrome o Firefox.
 | `--msgstore` | `db/msgstore.db` | Ruta al `msgstore.db` plaintext extraido por `forense_android.py`. |
 | `--wadb` | `db/wa.db` | Ruta al `wa.db` plaintext. |
 | `--output` | `wa_viewer.html` | Fichero HTML de salida. |
-| `--contacts-vcf` | — | Ruta a un `.vcf` con la libreta del telefono. Anade nombres de contactos privados a los chats. Prevalece sobre los nombres que WhatsApp guarda internamente. Ver explicacion abajo. |
+| `--contacts` | — | Ruta a un `.vcf` con la libreta del telefono. Anade nombres de contactos privados a los chats. Prevalece sobre los nombres que WhatsApp guarda internamente. Ver explicacion abajo. |
 | `--default-cc` | `34` | Codigo de pais por defecto para los telefonos del VCF que vienen en formato local sin prefijo `+` (ej. `654-117-918` -> `+34654117918`). Cambialo si tu agenda esta en otro pais. |
 
-#### Por que `--contacts-vcf` (chats privados que salen con numero)
+#### Por que `--contacts` (chats privados que salen con numero)
 
 A partir de WhatsApp **2.26 / Android 16**, los nombres de los contactos individuales **ya no se guardan dentro de las BDs de WhatsApp**. WhatsApp los lee en runtime de la libreta del sistema Android, que esta fuera del backup. Por eso:
 
@@ -449,14 +449,14 @@ Pasar el VCF de tu libreta resuelve esos chats privados.
 python3 wa_viewer.py \
     --msgstore ~/backup_movil/2026-05-11/whatsapp/extracted/apps/com.whatsapp/db/msgstore.db \
     --wadb     ~/backup_movil/2026-05-11/whatsapp/extracted/apps/com.whatsapp/db/wa.db \
-    --contacts-vcf ~/Descargas/contacts.vcf \
+    --contacts ~/Descargas/contacts.vcf \
     --output   chats_whatsapp.html
 
 # Windows
 python wa_viewer.py ^
     --msgstore "%USERPROFILE%\backup_movil\2026-05-11\whatsapp\extracted\apps\com.whatsapp\db\msgstore.db" ^
     --wadb     "%USERPROFILE%\backup_movil\2026-05-11\whatsapp\extracted\apps\com.whatsapp\db\wa.db" ^
-    --contacts-vcf "%USERPROFILE%\Downloads\contacts.vcf" ^
+    --contacts "%USERPROFILE%\Downloads\contacts.vcf" ^
     --output   chats_whatsapp.html
 ```
 

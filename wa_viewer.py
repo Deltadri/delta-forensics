@@ -16,7 +16,7 @@ def _parse_args():
     p.add_argument("--msgstore",     default="db/msgstore.db",  help="Ruta a msgstore.db")
     p.add_argument("--wadb",         default="db/wa.db",        help="Ruta a wa.db")
     p.add_argument("--output",       default="wa_viewer.html",  help="Archivo HTML de salida")
-    p.add_argument("--contacts-vcf", default=None,
+    p.add_argument("--contacts", default=None,
                    help="Ruta a contacts.vcf exportado del telefono (anade nombres "
                         "de la libreta a los chats privados). Prevalece sobre los "
                         "nombres que WhatsApp guarda internamente.")
@@ -29,7 +29,7 @@ _args        = _parse_args()
 MSGSTORE     = Path(_args.msgstore)
 WADB         = Path(_args.wadb)
 OUTPUT       = Path(_args.output)
-CONTACTS_VCF = Path(_args.contacts_vcf) if _args.contacts_vcf else None
+CONTACTS_FILE = Path(_args.contacts) if _args.contacts else None
 DEFAULT_CC   = "".join(c for c in str(_args.default_cc) if c.isdigit()) or "34"
 
 MSG_ICONS = {
@@ -282,14 +282,14 @@ def load_contacts():
     # Sobreescribe a las fuentes WA: el VCF refleja como llama el usuario a sus
     # contactos en su libreta, asi que es la "verdad" frente a los nombres que
     # WhatsApp deduce por LID/menciones.
-    if CONTACTS_VCF:
-        if CONTACTS_VCF.exists():
-            vcf_names = parse_vcf(CONTACTS_VCF, DEFAULT_CC)
+    if CONTACTS_FILE:
+        if CONTACTS_FILE.exists():
+            vcf_names = parse_vcf(CONTACTS_FILE, DEFAULT_CC)
             for jid, name in vcf_names.items():
                 contacts[jid] = name
-            print(f"    + {len(vcf_names)} nombres desde {CONTACTS_VCF.name}")
+            print(f"    + {len(vcf_names)} nombres desde {CONTACTS_FILE.name}")
         else:
-            print(f"[WARN] --contacts-vcf no existe: {CONTACTS_VCF}")
+            print(f"[WARN] --contacts no existe: {CONTACTS_FILE}")
 
     return contacts
 
