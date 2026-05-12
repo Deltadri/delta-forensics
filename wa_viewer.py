@@ -84,25 +84,117 @@ def _table_exists(con, name: str) -> bool:
 
 
 def load_contacts():
+    """Construye el diccionario JID -> nombre buscando en varias fuentes:
+
+    1. wa.db / wa_contacts        (formato legacy, WhatsApp <= 2.25)
+    2. msgstore.db / lid_display_name (WhatsApp 2.26+ usa LIDs para privacidad)
+    3. msgstore.db / chat.subject      (nombres de grupos)
+    4. msgstore.db / message_mentions  (display_name visto en menciones)
+
+    En WhatsApp 2.26 + Android 16, la BD wa.db tiene wa_contacts vacia porque
+    los nombres se leen ahora directamente de la libreta del SO. Asi que la
+    fuente principal es msgstore.db.
+    """
     contacts = {}
+
+    # --- Fuente 1: wa.db legacy ---
     try:
         con = sqlite3.connect(str(WADB))
-        rows = con.execute(
-            "SELECT jid, COALESCE(NULLIF(display_name,''), NULLIF(wa_name,''), number, jid) "
-            "FROM wa_contacts"
-        ).fetchall()
-        for jid, name in rows:
-            if jid:
-                contacts[jid] = name or jid
+        if _table_exists(con, "wa_contacts"):
+            cnt = con.execute("SELECT COUNT(*) FROM wa_contacts").fetchone()[0]
+            if cnt > 0:
+                rows = con.execute(
+                    "SELECT jid, COALESCE(NULLIF(display_name,''), NULLIF(wa_name,''), number, jid) "
+                    "FROM wa_contacts"
+                ).fetchall()
+                for jid, name in rows:
+                    if jid and name:
+                        contacts[jid] = name
         con.close()
     except Exception as e:
         print(f"[WARN] wa.db: {e}")
+
+    # --- Fuente 2/3/4: msgstore.db ---
+    try:
+        con = sqlite3.connect(str(MSGSTORE))
+
+        # lid_display_name: para LIDs (formato @lid moderno)
+        if _table_exists(con, "lid_display_name"):
+            rows = con.execute("""
+                SELECT j.raw_string, ldn.display_name, ldn.username
+                FROM lid_display_name ldn
+                JOIN jid j ON ldn.lid_row_id = j._id
+                WHERE ldn.display_name IS NOT NULL AND ldn.display_name != ''
+            """).fetchall()
+            for jid, dname, username in rows:
+                if jid and jid not in contacts:
+                    contacts[jid] = dname or username or jid
+
+        # jid_map + lid_display_name: cruza el LID con el numero de telefono
+        # asociado para recuperar nombres de chats individuales (@s.whatsapp.net)
+        # cuando WhatsApp 2.26+ solo guarda el nombre asociado al LID.
+        if _table_exists(con, "lid_display_name") and _table_exists(con, "jid_map"):
+            rows = con.execute("""
+                SELECT j_phone.raw_string,
+                       COALESCE(NULLIF(ldn.display_name, ''), ldn.username)
+                FROM lid_display_name ldn
+                JOIN jid j_lid ON ldn.lid_row_id = j_lid._id
+                JOIN jid_map jm ON jm.lid_row_id = j_lid._id
+                JOIN jid j_phone ON jm.jid_row_id = j_phone._id
+                WHERE ldn.display_name IS NOT NULL AND ldn.display_name != ''
+                  AND j_phone.raw_string IS NOT NULL
+            """).fetchall()
+            for phone_jid, name in rows:
+                if phone_jid and name and phone_jid not in contacts:
+                    contacts[phone_jid] = name
+
+        # chat.subject: nombres de grupos
+        if _table_exists(con, "chat"):
+            chat_cols = [r[1] for r in con.execute("PRAGMA table_info(chat)")]
+            if "subject" in chat_cols:
+                rows = con.execute("""
+                    SELECT j.raw_string, c.subject
+                    FROM chat c
+                    JOIN jid j ON c.jid_row_id = j._id
+                    WHERE c.subject IS NOT NULL AND c.subject != ''
+                """).fetchall()
+                for jid, subject in rows:
+                    if jid and (jid not in contacts or len(contacts[jid]) < 3):
+                        contacts[jid] = subject
+
+        # message_mentions: display_name visto en menciones (cubre individuales)
+        if _table_exists(con, "message_mentions"):
+            mention_cols = [r[1] for r in con.execute("PRAGMA table_info(message_mentions)")]
+            if "display_name" in mention_cols and "jid_row_id" in mention_cols:
+                rows = con.execute("""
+                    SELECT j.raw_string, mm.display_name, COUNT(*) as votes
+                    FROM message_mentions mm
+                    JOIN jid j ON mm.jid_row_id = j._id
+                    WHERE mm.display_name IS NOT NULL AND mm.display_name != ''
+                    GROUP BY j.raw_string, mm.display_name
+                    ORDER BY votes DESC
+                """).fetchall()
+                for jid, dname, _votes in rows:
+                    if jid and jid not in contacts:
+                        contacts[jid] = dname
+
+        con.close()
+    except Exception as e:
+        print(f"[WARN] msgstore.db (contactos): {e}")
+
     return contacts
 
 def jid_to_name(jid, contacts):
     if not jid:
         return ""
-    return contacts.get(jid, jid.split("@")[0])
+    if jid in contacts:
+        return contacts[jid]
+    # Fallback: extrae numero/identificador del JID, mas legible que el JID entero
+    head = jid.split("@")[0]
+    # Si es un LID puro (@lid), normalizar a "(LID)"
+    if "@lid" in jid:
+        return f"LID {head[:8]}…"
+    return head
 
 # ---------------------------------------------------------------------------
 

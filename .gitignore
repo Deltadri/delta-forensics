@@ -4,9 +4,18 @@ wa_backup/
 backup_movil/
 tmp_apks/
 wa_viewer.html
+whatsap/
+whatsapp/
+whatsap*/
+decrypted/
+external/
 *.ab
 *.tar
 *.sha256
+*.crypt14
+*.crypt15
+*.db
+*.bkup
 wa_extractor_debug.log
 log.txt
 
