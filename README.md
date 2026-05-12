@@ -219,7 +219,8 @@ delta-forensics/
 ├── abe/
 │   └── abe.jar               # Android Backup Extractor (incluido)
 ├── legacy_apk/
-│   └── LegacyWhatsApp.apk    # APK legacy incluido
+│   └── LegacyWhatsApp.apk    # APK legacy (2.11.431) incluido — anade aqui mas
+│                              # APKs candidatos si lo necesitas (orden alfabetico)
 ├── .gitignore
 └── README.md
 ```
