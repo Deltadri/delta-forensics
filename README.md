@@ -66,11 +66,12 @@ Cuantas mas confirmaciones recibamos mas precisa sera la matriz y menos sorpresa
 
 ### Opcionales (solo para extraccion de WhatsApp)
 
-| Herramienta | Para que se usa |
-|-------------|-----------------|
-| Java 11+ | Ejecutar `abe.jar` (extrae el backup `.ab`) |
+| Herramienta | Necesaria para | Como instalar |
+|---|---|---|
+| **Java 11+** | Metodo `legacy` (descifrar el `.ab` con `abe.jar`) | `sudo apt install openjdk-17-jdk` (ver seccion Instalacion) |
+| **wa-crypt-tools** | Metodo `crypt15` con descifrado (`--wa-key`) | `pip install wa-crypt-tools` |
 
-> `abe.jar` y `LegacyWhatsApp.apk` ya estan incluidos en el repo.
+> `abe.jar` y los APKs candidatos (`LegacyWhatsApp.apk`, etc.) ya estan incluidos en el repo. `wa-crypt-tools` lo instalas si vas a usar `--wa-key` o `--wa-key-file`; sin ellos no hace falta (pero el output queda cifrado).
 
 ---
 
@@ -168,75 +169,205 @@ adb devices
 
 ### `forense_android.py` — Backup forense completo
 
-Extrae almacenamiento, apps, estado del sistema y opcionalmente la base de datos de WhatsApp. Genera un informe HTML.
+Extrae almacenamiento, apps, estado del sistema y opcionalmente WhatsApp. Genera un informe HTML.
 
 > En Windows usa `python` en lugar de `python3`.
 
-```bash
-# Backup completo + extraccion WhatsApp (modo auto: elige metodo segun diagnostico)
-python3 forense_android.py
+### Que metodo de extraccion WhatsApp usar — guia rapida
 
-# Solo backup, sin tocar WhatsApp
-python3 forense_android.py --skip-wa
-
-# Forzar metodo legacy (instalar WA viejo + adb backup; solo Android <= 13)
-python3 forense_android.py --wa-method legacy
-
-# Forzar metodo crypt15 (no invasivo, pull de /sdcard/Android/media/com.whatsapp/)
-python3 forense_android.py --wa-method crypt15
-
-# crypt15 + descifrado automatico con la clave de 64 hex del titular
-python3 forense_android.py --wa-method crypt15 --wa-key 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
-
-# Misma cosa pero leyendo la clave de un fichero (encrypted_backup.key)
-python3 forense_android.py --wa-method crypt15 --wa-key-file ~/wa_key.bin
-
-# Si tienes 2 moviles conectados, especifica cual:
-python3 forense_android.py --device 007519410a0c148c
-
-# Modo recuperacion: si un run anterior fallo a medias, restaura WhatsApp
-python3 forense_android.py --restore-wa ~/backup_movil/2026-05-12_XX/whatsapp/apks_originales
+```
+              ¿Que Android tiene el movil?
+                        │
+        ┌───────────────┼───────────────┐
+        ▼               ▼               ▼
+    Android <= 13   Android 14    Android 15+
+        │               │               │
+        ▼               ▼               ▼
+   metodo legacy   metodo legacy   metodo crypt15
+   (auto lo elige)  (auto lo elige   (auto lo elige
+                    si funciona)     siempre)
+                                     ¿Quieres datos
+                                     descifrados?
+                                          │
+                                  ┌───────┴───────┐
+                                  ▼               ▼
+                                 SI               NO
+                          Pide la clave    Te basta con
+                          de 64 hex al     preservar los
+                          titular y pasa   .crypt15 + Media
+                          --wa-key X
 ```
 
-### Como conseguir la clave de 64 hex (para `--wa-key`)
+**Tu primera ejecucion deberia ser siempre:**
 
-Es algo que el **titular del dispositivo** tiene que hacer en su WhatsApp. **No se puede sacar de otra forma sin root**:
+```bash
+python3 forense_android.py
+```
 
-1. Abre WhatsApp en el movil.
-2. Ajustes -> Chats -> Copia de seguridad.
-3. "Copia de seguridad cifrada de extremo a extremo" -> Activar.
+El script diagnostica el dispositivo, te dice que metodo va a usar, y te explica en el log que flags necesitas si quieres mejor resultado. **No hay que adivinar nada**.
+
+### Tabla completa de flags
+
+| Flag | Por defecto | Descripcion |
+|---|---|---|
+| `--skip-wa` | desactivado | Omite la fase 5/8 entera (sin tocar WhatsApp). El resto del backup forense corre normal. |
+| `--wa-method {auto,legacy,crypt15}` | `auto` | Elige metodo de extraccion WhatsApp. Ver tabla abajo. |
+| `--wa-key HEX64` | — | Clave de 64 hex para descifrar `.crypt15`. Acepta `:`, `-`, espacios como separadores. Ej: `--wa-key 1234...abcd`. |
+| `--wa-key-file PATH` | — | Alternativa a `--wa-key`: ruta al fichero `encrypted_backup.key` (binario). |
+| `--device SERIAL` | autodetectado | Serial del dispositivo si hay >1 conectado. Sacalo de `adb devices`. Sin este flag, el script aborta cuando detecta varios moviles. |
+| `--restore-wa DIR` | — | **Modo recuperacion**: reinstala WhatsApp desde una carpeta `apks_originales` de un run anterior que fallo a mitad. No hace el backup forense general. |
+
+### Los 3 modos de `--wa-method`
+
+| `--wa-method` | Que hace | Cuando usarlo | Requisitos |
+|---|---|---|---|
+| **`auto`** (default) | Diagnostica el dispositivo y elige `legacy` si es viable, si no `crypt15`. Si `legacy` falla cae a `crypt15`. | **Siempre** salvo que sepas exactamente que quieres. | Ninguno |
+| **`legacy`** | Fuerza: desinstala WA -> instala WA viejo -> `adb backup` -> reinstala WA original. Te da `msgstore.db` plaintext directamente. | Android <= 13 o casos donde sabes que va a colar. | `java` en PATH |
+| **`crypt15`** | Solo `adb pull` de `/sdcard/Android/media/com.whatsapp/WhatsApp/`. Salida cifrada salvo que pases `--wa-key`. NO modifica el WhatsApp del movil. | Android 14+ o cuando quieres CERO riesgo de tocar el WhatsApp del titular. | `pip install wa-crypt-tools` (solo si `--wa-key`) |
+
+### Ejemplos por escenario
+
+**Mi movil es Android 13 o anterior (OPPO, Samsung, Pixel viejo, etc.):**
+
+```bash
+# El default ya hace lo correcto:
+python3 forense_android.py
+```
+Te genera `msgstore.db` plaintext directamente via legacy.
+
+**Mi movil es Android 14/15 y SI puedo pedir la clave al titular:**
+
+```bash
+# 1) El titular en SU movil:
+#    WA -> Ajustes -> Chats -> Copia de seguridad -> "Copia E2E" -> activar
+#    Elegir "Usar clave de 64 digitos" (NO password)
+#    Apuntar la clave que sale
+#    Pulsar "Hacer copia" (boton verde)
+
+# 2) En tu portatil con el movil enchufado:
+pip install wa-crypt-tools
+python3 forense_android.py \
+    --wa-method crypt15 \
+    --wa-key 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+```
+Te genera `~/backup_movil/.../whatsapp/decrypted/msgstore.db` plaintext que luego pasas a `wa_viewer.py`.
+
+**Mi movil es Android 14/15 y NO tengo la clave (preservacion forense):**
+
+```bash
+python3 forense_android.py --wa-method crypt15
+```
+Te baja los `.crypt15` cifrados + Media en claro + hashes SHA-256 + instrucciones de descifrado en el `informe.html`. Para descifrar despues cuando tengas la clave: `wadecrypt <CLAVE> msgstore.db.crypt15 msgstore.db`.
+
+**Solo me interesa el backup forense (no WhatsApp):**
+
+```bash
+python3 forense_android.py --skip-wa
+```
+
+**Tengo varios moviles conectados:**
+
+```bash
+adb devices
+# Apunta el serial del que quieras
+
+python3 forense_android.py --device 007519410a0c148c
+```
+
+**Un run anterior fallo a mitad y me dejo WhatsApp roto:**
+
+```bash
+# La carpeta apks_originales esta dentro del backup anterior
+python3 forense_android.py --restore-wa ~/backup_movil/2026-05-11_22-30-00/whatsapp/apks_originales
+```
+Esto solo reinstala WhatsApp con los APKs guardados, sin tocar nada mas.
+
+### Como conseguir la clave de 64 hex
+
+**Solo el titular del dispositivo puede sacarla**. No hay forma de extraerla sin root. Pasos en el movil:
+
+1. Abre WhatsApp.
+2. **Ajustes** → **Chats** → **Copia de seguridad**.
+3. **"Copia de seguridad cifrada de extremo a extremo"** → Activar.
 4. Elegir **"Usar clave de cifrado de 64 digitos"** (NO "Crear contrasena").
 5. Confirmar con PIN/huella del movil.
-6. WhatsApp muestra una clave de 64 caracteres hex. **Screenshot o anotar**.
-7. Pulsar "Hacer copia" (boton verde) para forzar un backup fresco con esa clave.
+6. WhatsApp muestra una clave de **64 caracteres hex**. Screenshot o anotala — si la pierdes no es recuperable.
+7. Pulsar **"Hacer copia"** (boton verde) para forzar un backup fresco con esa clave.
 
-Despues, pasale la clave al script con `--wa-key <CLAVE>` o `--wa-key-file <FICHERO>`. wa-crypt-tools (`pip install wa-crypt-tools`) se invoca automaticamente si esta en PATH.
+Despues, pasale la clave al script con `--wa-key <CLAVE>` (con o sin separadores `:` / `-` / espacios, da igual). Si prefieres, exportala como fichero y usa `--wa-key-file`.
 
-**Que genera:**
+### Que ficheros genera el script segun el metodo
+
+**Caso A — Metodo `legacy` (Android <= 13, OPPO Android 14, etc.):**
 
 ```
 ~/backup_movil/YYYY-MM-DD_HH-MM-SS/
-├── informe.html                  <- Informe forense navegable
-├── hashes.sha256                 <- Manifiesto de integridad SHA-256
-├── log.txt                       <- Log completo de la ejecucion
-├── almacenamiento_interno/       <- Copia de /storage/emulated/0/
-├── datos_forenses/               <- dumpsys, ps, propiedades, apps...
-└── whatsapp/                     <- (si la extraccion WA tuvo exito)
-    ├── whatsapp.ab               <- Backup Android raw
-    ├── apks_originales/          <- APKs del WA original (para restaurar)
-    └── extracted/                <- Base de datos descifrada
+├── informe.html              <- Informe HTML navegable
+├── hashes.sha256             <- Hashes SHA-256 de cada fichero (cadena de custodia)
+├── log.txt                   <- Log completo de la ejecucion
+├── almacenamiento_interno/   <- Copia de /storage/emulated/0/
+├── datos_forenses/           <- dumpsys, ps, getprop, listas de apps...
+└── whatsapp/
+    ├── whatsapp.ab           <- Backup Android raw (.ab)
+    ├── apks_originales/      <- APKs del WA original (por si hay que restaurar)
+    └── extracted/
         └── apps/com.whatsapp/db/
-            ├── msgstore.db       <- Mensajes
-            └── wa.db             <- Contactos
+            ├── msgstore.db   ★ <- Chats en SQLite plaintext
+            └── wa.db         ★ <- Contactos en SQLite plaintext
 ```
 
-> **Nota sobre la extraccion WhatsApp:**
-> El script tiene **2 metodos** y elige automaticamente segun el diagnostico:
->
-> - **Metodo `legacy`**: desinstala WhatsApp moderno temporalmente (manteniendo los datos con `-k`), instala una version antigua con `allowBackup=true`, ejecuta `adb backup` y restaura la version original. Requiere que aceptes el dialogo de backup en el movil. Solo funciona en Android <= 13 o con WhatsApp `targetSdk < 23`.
-> - **Metodo `crypt15`**: NO desinstala nada. Solo `adb pull` de `/sdcard/Android/media/com.whatsapp/WhatsApp/`. Las DBs salen cifradas (.crypt15) y se descifran con la clave de 64 hex del titular usando `wa-crypt-tools` (`pip install wa-crypt-tools`). Es el unico metodo que funciona en Android 14+.
->
-> En ambos metodos tus mensajes NO se borran. El metodo `legacy` desinstala y reinstala WhatsApp brevemente; el metodo `crypt15` no toca la app en absoluto.
+**Caso B — Metodo `crypt15` SIN clave del usuario:**
+
+```
+~/backup_movil/YYYY-MM-DD_HH-MM-SS/
+├── informe.html              <- Informe HTML (incluye seccion "WhatsApp crypt15"
+│                                 con tabla de ficheros + SHA-256 + instrucciones)
+├── hashes.sha256
+├── log.txt
+├── almacenamiento_interno/
+├── datos_forenses/
+└── whatsapp/
+    └── external/
+        └── Android_media/
+            ├── Databases/
+            │   ├── msgstore.db.crypt15            <- ULTIMO backup (anoche ~2am), CIFRADO
+            │   ├── msgstore-YYYY-MM-DD.1.db.crypt15  <- backups historicos cifrados
+            │   ├── wa.db.crypt15                  <- contactos cifrado
+            │   └── ...
+            ├── Media/                             <- todo SIN cifrar
+            │   ├── WhatsApp Images/               <- fotos enviadas/recibidas (.jpg)
+            │   ├── WhatsApp Video/                <- videos (.mp4)
+            │   ├── WhatsApp Voice Notes/          <- audios (.opus)
+            │   ├── WhatsApp Documents/            <- PDFs, docs
+            │   ├── WhatsApp Stickers/
+            │   └── .Statuses/                     <- estados vistos en cache
+            └── Backups/                           <- formato viejo si existe
+```
+
+**Caso C — Metodo `crypt15` CON `--wa-key`:**
+
+Igual que el caso B PERO ademas:
+
+```
+~/backup_movil/YYYY-MM-DD_HH-MM-SS/whatsapp/
+└── decrypted/
+    ├── msgstore.db           ★ <- Chats en SQLite plaintext (descifrado al vuelo)
+    ├── wa.db                 ★ <- Contactos plaintext (descifrado al vuelo)
+    └── msgstore-2026-05-11.1.db    <- backups historicos descifrados
+```
+
+★ son los ficheros que luego pasas a `wa_viewer.py` para ver los chats en HTML.
+
+### Como se invoca todo en orden
+
+1. Script arranca → diagnostica el movil + log.
+2. Decide el metodo (auto / forzado por flag).
+3. Pull del almacenamiento + apps + estado del sistema.
+4. **Fase 5/8 WhatsApp** segun metodo elegido.
+5. Genera `informe.html` con todos los datos + hashes SHA-256.
+6. Termina mostrando el resumen y el comando para abrir el informe.
+
+Si el flujo cae a mitad por Ctrl-C o crash, el script restaura WhatsApp automaticamente (solo aplica al metodo `legacy`; el `crypt15` no tiene nada que restaurar porque no modifica el movil).
 
 ---
 
@@ -314,7 +445,73 @@ delta-forensics/
 
 > **El entorno de produccion soportado es Linux** (Ubuntu 22.04+ y derivadas). Es donde se ha desarrollado y donde se ejecutan los runs reales.
 
-Para la matriz por **dispositivo Android** ver el apartado [Estado de compatibilidad real](#%EF%B8%8F-estado-de-compatibilidad-real-probado-no-marketing) al principio del README.
+Para la matriz por **dispositivo Android** ver el apartado [Estado de compatibilidad real](#%EF%B8%8F-estado-de-compatibilidad-real) al principio del README.
+
+---
+
+## Troubleshooting (problemas comunes)
+
+### `adb devices` muestra `unauthorized`
+
+El movil no acepto la huella RSA o la revoco. En el movil → **Opciones de desarrollador** → "Revocar autorizaciones de depuracion USB" → desconectar cable → reconectar → aceptar la huella **marcando "Permitir siempre desde este ordenador"**.
+
+### El script aborta con "Multiples dispositivos conectados"
+
+Es proteccion forense para no actuar sobre el movil equivocado. Soluciones:
+- Desconecta los demas moviles, deja solo el de interes.
+- O pasa `--device <SERIAL>` (lo sacas de `adb devices`).
+
+### Tras `adb reboot` el movil queda en `unauthorized` (Android 14/15 / BBK)
+
+El script lo detecta y espera 90 s a que reaceptes la huella RSA en el movil. **Tenlo a mano cuando reinicie**. Si no aparece el dialogo: Opciones de desarrollador → "Revocar autorizaciones de depuracion USB" → reconectar.
+
+### `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` en el metodo legacy
+
+Tu movil es Android 14+ con WhatsApp moderno (`targetSdk >= 23`). **El metodo legacy no puede funcionar** en este escenario, es un bloqueo del propio Android. Usa `--wa-method crypt15` en su lugar.
+
+### `adb backup` produce un `.ab` vacio (solo cabecera, 0 datos)
+
+Tu OEM (probablemente Huawei/EMUI) bloquea silenciosamente `adb backup`. **No hay forma programatica de sortearlo**. Cae al metodo `crypt15`.
+
+### El script dice "WhatsApp esta en estado uninstalled-keep-data"
+
+Un run anterior fallo entre el `pm uninstall -k` y el reinstall, dejando huerfanos los datos. **Tus chats siguen ahi**. Recupera con:
+
+```bash
+ls ~/backup_movil/*/whatsapp/apks_originales/  # localiza la carpeta del run anterior
+python3 forense_android.py --restore-wa ~/backup_movil/YYYY-MM-DD_XX/whatsapp/apks_originales
+```
+
+### `wadecrypt: command not found`
+
+Instala `wa-crypt-tools`:
+```bash
+pip install wa-crypt-tools
+```
+Si trabajas en un entorno aislado (PEP 668 en Ubuntu reciente):
+```bash
+pipx install wa-crypt-tools
+# o:
+python3 -m venv venv && source venv/bin/activate && pip install wa-crypt-tools
+```
+
+### El `.crypt15` no se descifra con la clave que te dio el titular
+
+Causas tipicas:
+- La clave es de **otra cuenta** de WhatsApp (el titular tiene 2 numeros y se confundio).
+- El backup fue creado **antes** de activar E2E en el movil — esos `.crypt15` viejos usan la clave local (root-only) no la de 64 hex. Pide al titular que pulse "Hacer copia" para generar uno fresco con la nueva clave, y vuelve a hacer pull.
+- El titular eligio **contrasena** en lugar de "clave de 64 digitos" en la pantalla E2E de WhatsApp. wa-crypt-tools soporta password-based decryption pero no se invoca con `--wa-key`. En ese caso usa `wadecrypt` directamente con `--password` (consulta `wadecrypt --help`).
+
+### El backup forense general funciona pero la fase 5/8 (WhatsApp) falla en todo
+
+Mientras `[1/8]` a `[4/8]` y `[6/8]` a `[8/8]` terminen bien, ya tienes el backup completo de almacenamiento + apps + estado del sistema + informe HTML. Solo te falta WhatsApp. Es un fallo parcial recuperable: relanza con `--wa-method crypt15` o salta WhatsApp con `--skip-wa` si no lo necesitas.
+
+### Ayuda
+
+Si tu problema no esta cubierto aqui, [abre un issue](https://github.com/Deltadri/delta-forensics/issues/new) con:
+- Modelo del movil + version Android + OS skin
+- El comando exacto que lanzaste
+- Las ultimas 20-30 lineas del log (`log.txt` dentro del backup)
 
 ---
 
