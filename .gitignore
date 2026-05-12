@@ -1,23 +1,75 @@
-# Datos extraidos — nunca subir al repo
-db/
-wa_backup/
-backup_movil/
-tmp_apks/
-wa_viewer.html
-whatsap/
+# =====================================================================
+# DATOS EXTRAIDOS DEL DISPOSITIVO — NUNCA, JAMAS, BAJO NINGUN CONCEPTO
+# se commitean al repo. Patrones defensivos en profundidad: por nombre
+# de carpeta, por extension, por subcarpeta tipica y por glob recursivo.
+# =====================================================================
+
+# Carpetas-output del script (cualquier nombre que empiece por whatsap)
 whatsapp/
-whatsap*/
+whatsap/
+Whatsapp/
+WhatsApp/
+**/whatsapp/
+**/whatsap/
+**/Whatsapp/
+**/WhatsApp/
+
+# Carpetas internas del flow forense
+backup_movil/
+backup_movil*/
+**/backup_movil/
 decrypted/
 external/
+Android_media/
+sdcard_WhatsApp/
+apks_originales/
+extracted/
+**/decrypted/
+**/external/
+**/apks_originales/
+**/extracted/
+
+# Carpetas legacy de versiones previas del script
+db/
+wa_backup/
+tmp_apks/
+
+# Ficheros de salida tipicos
+wa_viewer.html
+chats.html
+chats_whatsapp.html
+informe.html
+log.txt
+wa_extractor_debug.log
+
+# Extensiones que SOLO pueden venir del dispositivo
 *.ab
 *.tar
 *.sha256
+*.crypt12
 *.crypt14
 *.crypt15
-*.db
 *.bkup
-wa_extractor_debug.log
-log.txt
+*.was
+
+# Bases de datos sensibles
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+msgstore*
+wa.db*
+chatsettingsbackup*
+commerce_backup*
+status_backup*
+chatlock_backup*
+
+# EXCEPCIONES: estos SI se commitean
+# (los APKs candidatos legacy son publicos, deben estar en el repo)
+!legacy_apk/*.apk
+
+# Script antiguo superado por forense_android.py
+wa_extractor.py
 
 # Script antiguo superado por forense_android.py
 wa_extractor.py
