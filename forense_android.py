@@ -545,25 +545,30 @@ def detect_oem_quirks(props: dict) -> dict:
 
 
 def _wa_legacy_apks() -> list[Path]:
-    """Devuelve la lista ordenada (alfabetica) de APKs legacy candidatos.
+    """Devuelve la lista ordenada (alfabetica case-SENSITIVE) de APKs legacy.
 
     El usuario coloca uno o varios APKs en legacy_apk/ y controla el orden
-    de intento con prefijos numericos en el nombre. Ejemplo de cascada:
+    de intento con prefijos numericos en el nombre. Ejemplo:
 
         legacy_apk/
           01_WhatsApp_2.19.151.apk   <- se intenta primero (targetSdk 28)
           02_WhatsApp_2.16.396.apk   <- fallback (targetSdk 23)
-          LegacyWhatsApp.apk         <- ultimo recurso (alfabetico)
+          LegacyWhatsApp.apk         <- ultimo recurso
 
-    Razon: el LegacyWhatsApp.apk historico (WA 2.11.431, targetSdk=19) falla
-    en Android 14/15 con INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE. Anadir un
-    APK con targetSdk >= 23 antes en orden permite que el script lo pruebe
-    primero y caiga al de targetSdk=19 solo en Androids antiguos.
+    Orden case-sensitive ASCII para que sea identico en Linux y Windows:
+    'L' (codepoint 76) < 'c' (99), asi que 'LegacyWhatsApp.apk' SIEMPRE va
+    antes que 'com.whatsapp_*.apk' independientemente del SO. Esto preserva
+    el flujo del OPPO Android 14 (donde la 2.11.431 historica instalaba y
+    backupeaba correctamente) — la 2.12.535 solo entra si la 2.11.431 falla.
+
+    Sin esta ordenacion explicita, Path.__lt__ en Windows hace lowercase
+    (case-insensitive) y cambia el orden, lo que en testing daba salida
+    distinta a la de produccion en Linux.
     """
     folder = LEGACY_DIR
     if not folder.is_dir():
         return []
-    return sorted(p for p in folder.glob("*.apk") if p.is_file())
+    return sorted((p for p in folder.glob("*.apk") if p.is_file()), key=lambda p: p.name)
 
 
 def _wa_prereqs() -> tuple[bool, str]:
