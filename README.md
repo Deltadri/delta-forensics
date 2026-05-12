@@ -49,7 +49,6 @@ Cuantas mas confirmaciones recibamos mas precisa sera la matriz y menos sorpresa
 |--------|-------------|
 | `forense_android.py` | Backup forense completo + extraccion WhatsApp + informe HTML |
 | `wa_viewer.py` | Visor de chats WhatsApp en HTML desde `msgstore.db` |
-| `backup_android.sh` | Version shell del backup (solo Linux, sin extraccion WA) |
 
 ---
 
@@ -412,16 +411,56 @@ Abre el HTML generado en Chrome o Firefox.
 - Diseño oscuro estilo WhatsApp
 - Funciona sin servidor, es un HTML estatico
 
----
+#### Flags de `wa_viewer.py`
 
-### `backup_android.sh` — Backup shell (solo Linux)
+| Flag | Por defecto | Descripcion |
+|---|---|---|
+| `--msgstore` | `db/msgstore.db` | Ruta al `msgstore.db` plaintext extraido por `forense_android.py`. |
+| `--wadb` | `db/wa.db` | Ruta al `wa.db` plaintext. |
+| `--output` | `wa_viewer.html` | Fichero HTML de salida. |
+| `--contacts-vcf` | — | Ruta a un `.vcf` con la libreta del telefono. Anade nombres de contactos privados a los chats. Prevalece sobre los nombres que WhatsApp guarda internamente. Ver explicacion abajo. |
+| `--default-cc` | `34` | Codigo de pais por defecto para los telefonos del VCF que vienen en formato local sin prefijo `+` (ej. `654-117-918` -> `+34654117918`). Cambialo si tu agenda esta en otro pais. |
 
-Version alternativa del backup en bash puro, sin extraccion de WhatsApp.
+#### Por que `--contacts-vcf` (chats privados que salen con numero)
+
+A partir de WhatsApp **2.26 / Android 16**, los nombres de los contactos individuales **ya no se guardan dentro de las BDs de WhatsApp**. WhatsApp los lee en runtime de la libreta del sistema Android, que esta fuera del backup. Por eso:
+
+- **Grupos**: siempre salen con su nombre (esta en `chat.subject` de `msgstore.db`).
+- **Chats privados**: salen con el numero de telefono, salvo que la persona te haya escrito via LID y exista mapeo LID->JID, o haya sido mencionada en un grupo.
+
+Pasar el VCF de tu libreta resuelve esos chats privados.
+
+#### Como exportar el `.vcf` desde Android
+
+**Desde la app oficial de Google Contacts (Android):**
+
+1. Abre la app **Contactos** de Google en el movil.
+2. En la barra inferior pulsa **Organizar** (icono abajo a la derecha).
+3. Pulsa **Exportar a archivo** -> elige la cuenta de Google que quieras exportar.
+4. Se genera un `contacts.vcf` (normalmente en `Descargas/`).
+5. Pasa el `.vcf` al ordenador (cable USB, Drive, lo que prefieras).
+
+> Si tu version de Contactos no muestra "Organizar", el flujo equivalente esta en **menu ☰ -> Ajustes -> Exportar -> Exportar a archivo .vcf**. Algunos OEM (Samsung, Xiaomi) tienen su propia app de Contactos con un flujo similar bajo **Ajustes -> Importar/Exportar contactos -> Exportar al almacenamiento**.
+
+**Ejemplo de uso con VCF:**
 
 ```bash
-chmod +x backup_android.sh
-./backup_android.sh
+# Linux / macOS
+python3 wa_viewer.py \
+    --msgstore ~/backup_movil/2026-05-11/whatsapp/extracted/apps/com.whatsapp/db/msgstore.db \
+    --wadb     ~/backup_movil/2026-05-11/whatsapp/extracted/apps/com.whatsapp/db/wa.db \
+    --contacts-vcf ~/Descargas/contacts.vcf \
+    --output   chats_whatsapp.html
+
+# Windows
+python wa_viewer.py ^
+    --msgstore "%USERPROFILE%\backup_movil\2026-05-11\whatsapp\extracted\apps\com.whatsapp\db\msgstore.db" ^
+    --wadb     "%USERPROFILE%\backup_movil\2026-05-11\whatsapp\extracted\apps\com.whatsapp\db\wa.db" ^
+    --contacts-vcf "%USERPROFILE%\Downloads\contacts.vcf" ^
+    --output   chats_whatsapp.html
 ```
+
+El parser entiende vCard 2.1/3.0, soporta tildes/ñ (decodifica `QUOTED-PRINTABLE`), descarta numeros cortos de servicio (1004, 1470, etc.) que no son JIDs WhatsApp validos, y normaliza formatos locales (`654-117-918`, `0034...`, `+34 ...`) al JID `<num>@s.whatsapp.net`.
 
 ---
 
@@ -431,7 +470,6 @@ chmod +x backup_android.sh
 delta-forensics/
 ├── forense_android.py        # Suite principal (backup + WA + informe)
 ├── wa_viewer.py              # Visor HTML de chats WhatsApp
-├── backup_android.sh         # Backup alternativo en shell (Linux)
 ├── abe/
 │   └── abe.jar               # Android Backup Extractor (incluido)
 ├── legacy_apk/
@@ -445,11 +483,11 @@ delta-forensics/
 
 ## Compatibilidad por SO del host
 
-| Sistema | `forense_android.py` | `wa_viewer.py` | `backup_android.sh` |
-|---------|---------------------|----------------|---------------------|
-| Linux (Ubuntu, Debian, Fedora, Arch) | ✅ Probado | ✅ Probado | ✅ Probado |
-| Windows | 🟡 No verificado — debe funcionar (stdlib + adb.exe + java.exe en PATH) pero **no esta confirmado**. Si lo pruebas, abre un issue. | ✅ Probado | ❌ Script bash, no aplica |
-| macOS   | 🟡 No probado pero **deberia** funcionar igual que Linux | 🟡 No probado | 🟡 Probablemente parcial |
+| Sistema | `forense_android.py` | `wa_viewer.py` |
+|---------|---------------------|----------------|
+| Linux (Ubuntu, Debian, Fedora, Arch) | ✅ Probado | ✅ Probado |
+| Windows | 🟡 No verificado — debe funcionar (stdlib + adb.exe + java.exe en PATH) pero **no esta confirmado**. Si lo pruebas, abre un issue. | ✅ Probado |
+| macOS   | 🟡 No probado pero **deberia** funcionar igual que Linux | 🟡 No probado |
 
 > **El entorno de produccion soportado es Linux** (Ubuntu 22.04+ y derivadas). Es donde se ha desarrollado y donde se ejecutan los runs reales.
 

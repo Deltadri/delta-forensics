@@ -13,15 +13,24 @@ from pathlib import Path
 def _parse_args():
     import argparse
     p = argparse.ArgumentParser(description="WhatsApp Chat Viewer — genera HTML desde msgstore.db")
-    p.add_argument("--msgstore", default="db/msgstore.db", help="Ruta a msgstore.db")
-    p.add_argument("--wadb",     default="db/wa.db",       help="Ruta a wa.db")
-    p.add_argument("--output",   default="wa_viewer.html", help="Archivo HTML de salida")
+    p.add_argument("--msgstore",     default="db/msgstore.db",  help="Ruta a msgstore.db")
+    p.add_argument("--wadb",         default="db/wa.db",        help="Ruta a wa.db")
+    p.add_argument("--output",       default="wa_viewer.html",  help="Archivo HTML de salida")
+    p.add_argument("--contacts-vcf", default=None,
+                   help="Ruta a contacts.vcf exportado del telefono (anade nombres "
+                        "de la libreta a los chats privados). Prevalece sobre los "
+                        "nombres que WhatsApp guarda internamente.")
+    p.add_argument("--default-cc",   default="34",
+                   help="Codigo de pais por defecto para numeros locales del VCF "
+                        "sin prefijo internacional (default: 34 / Espana).")
     return p.parse_args()
 
-_args    = _parse_args()
-MSGSTORE = Path(_args.msgstore)
-WADB     = Path(_args.wadb)
-OUTPUT   = Path(_args.output)
+_args        = _parse_args()
+MSGSTORE     = Path(_args.msgstore)
+WADB         = Path(_args.wadb)
+OUTPUT       = Path(_args.output)
+CONTACTS_VCF = Path(_args.contacts_vcf) if _args.contacts_vcf else None
+DEFAULT_CC   = "".join(c for c in str(_args.default_cc) if c.isdigit()) or "34"
 
 MSG_ICONS = {
     1: "🖼️ Imagen", 2: "🎵 Audio", 3: "🎬 Video", 4: "👤 Contacto",
@@ -81,6 +90,93 @@ def _table_exists(con, name: str) -> bool:
     return con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone() is not None
+
+
+def _phone_to_jid(raw: str, default_cc: str):
+    """Normaliza un telefono crudo del VCF a JID WhatsApp <num>@s.whatsapp.net.
+
+    - Conserva el prefijo internacional si viene con '+' o '00'.
+    - Si no hay prefijo internacional, antepone default_cc.
+    - Descarta numeros con menos de 7 digitos (codigos de servicio: 1470, 11822...
+      no son JIDs WhatsApp validos).
+    """
+    if not raw:
+        return None
+    plus = raw.strip().startswith("+")
+    digits = "".join(c for c in raw if c.isdigit())
+    if len(digits) < 7:
+        return None
+    if plus:
+        num = digits
+    elif digits.startswith("00") and len(digits) > 9:
+        num = digits[2:]
+    elif digits.startswith(default_cc):
+        num = digits
+    else:
+        num = default_cc + digits
+    return f"{num}@s.whatsapp.net"
+
+
+def parse_vcf(path: Path, default_cc: str):
+    """Parsea un vCard 2.1 / 3.0 y devuelve {jid: nombre}.
+
+    Soporta:
+    - line folding estandar vCard (lineas que empiezan con espacio o tab)
+    - quoted-printable line folding (lineas que acaban en '=')
+    - decodificacion ENCODING=QUOTED-PRINTABLE / CHARSET=UTF-8 en FN
+    - multiples TEL por contacto (cada uno mapea al mismo nombre)
+    """
+    import quopri
+    result = {}
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        print(f"[WARN] No se pudo leer VCF '{path}': {e}")
+        return result
+
+    # Unfold: QP (linea acaba en '=') y vCard estandar (linea siguiente con espacio)
+    lines = []
+    for ln in raw.splitlines():
+        if lines and lines[-1].endswith("="):
+            lines[-1] = lines[-1][:-1] + ln
+        elif ln.startswith(" ") or ln.startswith("\t"):
+            lines[-1] = lines[-1] + ln[1:]
+        else:
+            lines.append(ln)
+
+    def _decode_value(head: str, value: str) -> str:
+        if "QUOTED-PRINTABLE" in head.upper():
+            try:
+                return quopri.decodestring(
+                    value.encode("ascii", "ignore")
+                ).decode("utf-8", "replace")
+            except Exception:
+                return value
+        return value
+
+    fn, tels = None, []
+    for ln in lines:
+        u = ln.upper()
+        if u.startswith("BEGIN:VCARD"):
+            fn, tels = None, []
+        elif u.startswith("END:VCARD"):
+            if fn:
+                for tel in tels:
+                    jid = _phone_to_jid(tel, default_cc)
+                    if jid:
+                        result.setdefault(jid, fn)
+            fn, tels = None, []
+        elif u.startswith("FN"):
+            head, _, value = ln.partition(":")
+            value = _decode_value(head, value).strip()
+            if value:
+                fn = value
+        elif u.startswith("TEL"):
+            _, _, value = ln.partition(":")
+            value = value.strip()
+            if value:
+                tels.append(value)
+    return result
 
 
 def load_contacts():
@@ -181,6 +277,19 @@ def load_contacts():
         con.close()
     except Exception as e:
         print(f"[WARN] msgstore.db (contactos): {e}")
+
+    # --- Fuente 5: VCF externo (libreta del telefono exportada) ---
+    # Sobreescribe a las fuentes WA: el VCF refleja como llama el usuario a sus
+    # contactos en su libreta, asi que es la "verdad" frente a los nombres que
+    # WhatsApp deduce por LID/menciones.
+    if CONTACTS_VCF:
+        if CONTACTS_VCF.exists():
+            vcf_names = parse_vcf(CONTACTS_VCF, DEFAULT_CC)
+            for jid, name in vcf_names.items():
+                contacts[jid] = name
+            print(f"    + {len(vcf_names)} nombres desde {CONTACTS_VCF.name}")
+        else:
+            print(f"[WARN] --contacts-vcf no existe: {CONTACTS_VCF}")
 
     return contacts
 
