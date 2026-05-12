@@ -99,7 +99,7 @@ Cuantas mas confirmaciones recibamos mas precisa sera la matriz y menos sorpresa
 | Herramienta | Necesaria para | Como instalar |
 |---|---|---|
 | **Java 11+** | Metodo `legacy` (descifrar el `.ab` con `abe.jar`) | `sudo apt install openjdk-17-jdk` (ver seccion Instalacion) |
-| **wa-crypt-tools** | Metodo `crypt15` con descifrado (`--wa-key`) | `pip install wa-crypt-tools` |
+| **wa-crypt-tools** | Metodo `crypt15` con descifrado (`--wa-key`) | `pipx install wa-crypt-tools` (ver seccion Instalacion — `pip` directo falla en Ubuntu 24.04+ por PEP 668) |
 
 > `abe.jar` y los APKs candidatos (`LegacyWhatsApp.apk`, etc.) ya estan incluidos en el repo. `wa-crypt-tools` lo instalas si vas a usar `--wa-key` o `--wa-key-file`; sin ellos no hace falta (pero el output queda cifrado).
 
@@ -135,6 +135,39 @@ sudo dnf install java-17-openjdk
 sudo pacman -S jdk17-openjdk
 ```
 
+#### wa-crypt-tools (solo si vas a usar `--wa-key` o `--wa-key-file`)
+
+En Ubuntu 22.04+ / Debian 12+ / Fedora 38+ no se puede hacer `pip install wa-crypt-tools` directamente — el sistema lo bloquea con `error: externally-managed-environment` (PEP 668). La forma limpia y recomendada es **pipx**, que aisla la herramienta en su propio entorno y deja el binario `wadecrypt` accesible desde cualquier sitio.
+
+```bash
+# Ubuntu / Debian
+sudo apt install pipx -y
+pipx ensurepath
+source ~/.bashrc           # recarga el PATH en la terminal actual
+pipx install wa-crypt-tools
+
+# Fedora / RHEL
+sudo dnf install pipx -y
+pipx ensurepath
+source ~/.bashrc
+pipx install wa-crypt-tools
+
+# Arch Linux
+sudo pacman -S python-pipx
+pipx ensurepath
+source ~/.bashrc
+pipx install wa-crypt-tools
+```
+
+Verifica que quedo bien:
+
+```bash
+which wadecrypt
+# Debe imprimir: /home/<usuario>/.local/bin/wadecrypt
+```
+
+> **Alternativa con venv** si no quieres usar pipx: `python3 -m venv .venv && source .venv/bin/activate && pip install wa-crypt-tools`. Tendras que activar el venv cada vez que vayas a lanzar `forense_android.py`.
+
 #### Clonar el repositorio
 
 ```bash
@@ -163,6 +196,26 @@ winget install EclipseAdoptium.Temurin.17.JDK
 ```powershell
 winget install -e --id Python.Python.3.13 --scope machine
 ```
+
+#### wa-crypt-tools (solo si vas a usar `--wa-key` o `--wa-key-file`)
+
+En Windows PEP 668 no aplica igual que en Linux, asi que `pip install --user` funciona — pero pipx sigue siendo la opcion mas limpia porque deja `wadecrypt.exe` en PATH sin tocar el Python del sistema:
+
+```powershell
+python -m pip install --user pipx
+python -m pipx ensurepath
+# Cierra y abre PowerShell para recargar el PATH, luego:
+pipx install wa-crypt-tools
+```
+
+Verifica:
+
+```powershell
+Get-Command wadecrypt
+# Debe imprimir la ruta a wadecrypt.exe en %USERPROFILE%\.local\bin\
+```
+
+> **Alternativa rapida** sin pipx: `pip install --user wa-crypt-tools`. Mas simple pero ensucia el Python del sistema.
 
 #### Clonar el repositorio
 
