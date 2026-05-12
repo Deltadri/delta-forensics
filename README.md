@@ -246,7 +246,7 @@ El script diagnostica el dispositivo, te dice que metodo va a usar, y te explica
 | `--skip-wa` | desactivado | Omite la fase 5/8 entera (sin tocar WhatsApp). El resto del backup forense corre normal. |
 | `--only-wa` | desactivado | Lo contrario: salta las fases pesadas (2/8 almacenamiento, 3/8 apps, 4/8 estado) y va directo a WhatsApp. Util para reintentos rapidos. Incompatible con `--skip-wa`. |
 | `--wa-method {auto,legacy,crypt15}` | `auto` | Elige metodo de extraccion WhatsApp. Ver tabla abajo. |
-| `--wa-key HEX64` | — | Clave de 64 hex para descifrar `.crypt15`. Acepta `:`, `-`, espacios como separadores. Ej: `--wa-key 1234...abcd`. |
+| `--wa-key HEX64` | — | Clave de 64 hex para descifrar `.crypt15`. Acepta `:`, `-`, espacios como separadores. Ej: `--wa-key TU_CLAVE_DE_64_HEX`. |
 | `--wa-key-file PATH` | — | Alternativa a `--wa-key`: ruta al fichero `encrypted_backup.key` (binario). |
 | `--device SERIAL` | autodetectado | Serial del dispositivo si hay >1 conectado. Sacalo de `adb devices`. Sin este flag, el script aborta cuando detecta varios moviles. |
 | `--restore-wa DIR` | — | **Modo recuperacion**: reinstala WhatsApp desde una carpeta `apks_originales` de un run anterior que fallo a mitad. No hace el backup forense general. |
@@ -282,7 +282,7 @@ Te genera `msgstore.db` plaintext directamente via legacy.
 pip install wa-crypt-tools
 python3 forense_android.py \
     --wa-method crypt15 \
-    --wa-key 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+    --wa-key TU_CLAVE_DE_64_HEX
 ```
 Te genera `~/backup_movil/.../whatsapp/decrypted/msgstore.db` plaintext que luego pasas a `wa_viewer.py`.
 
@@ -363,7 +363,7 @@ Una vez tienes la clave, pasala al script con `--wa-key <CLAVE>`. Acepta cualqui
 
 ```bash
 # Todas estas formas son equivalentes:
---wa-key 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+--wa-key TU_CLAVE_DE_64_HEX
 --wa-key 1234:5678:90ab:cdef:1234:5678:90ab:cdef:1234:5678:90ab:cdef:1234:5678:90ab:cdef
 --wa-key "1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678 90AB CDEF"
 ```

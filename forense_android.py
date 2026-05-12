@@ -2072,7 +2072,7 @@ def main() -> None:
              "El titular la saca en WhatsApp -> Ajustes -> Chats -> Copia de seguridad -> "
              "Copia cifrada de extremo a extremo -> 'Ver clave de 64 digitos'. "
              "Solo aplica a --wa-method crypt15 (o cuando auto cae a crypt15). "
-             "Ej: --wa-key 1234...abcd (acepta separadores ':', '-' o espacios; se normalizan)"
+             "Ej: --wa-key TU_CLAVE_DE_64_HEX (acepta separadores ':', '-' o espacios; se normalizan)"
     )
     parser.add_argument(
         "--wa-key-file", metavar="PATH",
