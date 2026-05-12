@@ -4,6 +4,27 @@ Suite de herramientas forenses para dispositivos Android. Extrae datos del dispo
 
 ---
 
+## ⚠️ Estado de compatibilidad real (probado, no marketing)
+
+`forense_android.py` y la extraccion de WhatsApp **estan probados con exito unicamente en**:
+
+| Fabricante | Android | OS skin | Resultado | Notas |
+|---|---|---|---|---|
+| **OPPO** | **14** | ColorOS | ✅ **Funciona** completo (backup forense + extraccion WA) | Es el unico escenario que ha terminado con `msgstore.db` extraido limpio |
+| Realme C71 | 15 | ColorOS 15 (BBK) | ❌ NO funciona la extraccion WA | El install legacy falla por `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` (es comportamiento de Android 14+, no del OEM). El backup forense general SI completa. |
+| Huawei P Smart | 9 (EMUI 9) | EMUI | ❌ NO funciona la extraccion WA | EMUI bloquea silenciosamente `adb backup` y devuelve un `.ab` vacio. Backup forense general SI completa. |
+
+**En la practica:**
+
+- Si tu dispositivo es **Android 13 o anterior** (cualquier fabricante salvo Huawei/EMUI 9+) tiene MUY altas probabilidades de funcionar completo, igual que el OPPO probado.
+- Si tu dispositivo es **Android 14** (cualquier fabricante salvo Huawei/EMUI o BBK con Permission Monitor activo) deberia funcionar — pero solo se ha confirmado en OPPO ColorOS, ten el movil a mano por si falla algun preflight.
+- Si tu dispositivo es **Android 15+** la extraccion WA **probablemente fallara** por el bloqueo de Android contra el downgrade del modelo de permisos. El backup forense general seguira funcionando.
+- Si tu dispositivo es **Huawei/Honor con EMUI 9+** la extraccion WA es **inviable** por bloqueo de OEM.
+
+`wa_viewer.py` es **independiente del dispositivo** — solo necesita el `msgstore.db` y `wa.db` ya descifrados. Si el `forense_android.py` consiguio extraerlos en cualquier movil, el viewer los va a procesar correctamente.
+
+---
+
 ## Herramientas
 
 | Script | Descripcion |
@@ -227,15 +248,17 @@ delta-forensics/
 
 ---
 
-## Compatibilidad
+## Compatibilidad por SO del host
 
 | Sistema | `forense_android.py` | `wa_viewer.py` | `backup_android.sh` |
 |---------|---------------------|----------------|---------------------|
-| Linux   | ✅ | ✅ | ✅ |
-| Windows | ✅ | ✅ | ❌ |
-| macOS   | ✅ | ✅ | Parcial |
+| Linux (Ubuntu, Debian, Fedora, Arch) | ✅ Probado | ✅ Probado | ✅ Probado |
+| Windows | 🟡 No verificado — debe funcionar (stdlib + adb.exe + java.exe en PATH) pero **no esta confirmado**. Si lo pruebas, abre un issue. | ✅ Probado | ❌ Script bash, no aplica |
+| macOS   | 🟡 No probado pero **deberia** funcionar igual que Linux | 🟡 No probado | 🟡 Probablemente parcial |
 
-Probado con Android 8 hasta Android 15, compatible con cualquier fabricante (Samsung, Xiaomi, OPPO, OnePlus, Huawei, Motorola, Google Pixel, Nothing, etc.).
+> **El entorno de produccion soportado es Linux** (Ubuntu 22.04+ y derivadas). Es donde se ha desarrollado y donde se ejecutan los runs reales.
+
+Para la matriz por **dispositivo Android** ver el apartado [Estado de compatibilidad real](#%EF%B8%8F-estado-de-compatibilidad-real-probado-no-marketing) al principio del README.
 
 ---
 
