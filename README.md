@@ -4,7 +4,7 @@ Suite de herramientas forenses para dispositivos Android. Extrae datos del dispo
 
 ---
 
-## ⚠️ Estado de compatibilidad real (probado, no marketing)
+## ⚠️ Estado de compatibilidad real
 
 `forense_android.py` y la extraccion de WhatsApp **estan probados con exito unicamente en**:
 
@@ -22,6 +22,19 @@ Suite de herramientas forenses para dispositivos Android. Extrae datos del dispo
 - Si tu dispositivo es **Huawei/Honor con EMUI 9+** la extraccion WA es **inviable** por bloqueo de OEM.
 
 `wa_viewer.py` es **independiente del dispositivo** — solo necesita el `msgstore.db` y `wa.db` ya descifrados. Si el `forense_android.py` consiguio extraerlos en cualquier movil, el viewer los va a procesar correctamente.
+
+### 🙋 Ayuda a ampliar esta lista
+
+Si has probado el script con un dispositivo que **NO** aparece en la tabla — funcione o no funcione — por favor [abre un issue en el repo](https://github.com/Deltadri/delta-forensics/issues/new) indicando:
+
+- **Fabricante y modelo exacto** (p.ej. `Samsung Galaxy A54`, `Xiaomi Redmi Note 12`)
+- **Version de Android** (Ajustes → Acerca del telefono → Version de Android)
+- **OS skin** y version si aplica (OneUI 6.1, MIUI 14, ColorOS 13, etc.)
+- **Resultado**: backup forense general (si/no), extraccion WhatsApp (si/no)
+- Si falla, **el ultimo bloque de log relevante** (especialmente las lineas `[WA]` y cualquier `[ERROR]`)
+- Cualquier preflight necesario que no esta documentado (toggles especificos del OEM, etc.)
+
+Cuantas mas confirmaciones recibamos mas precisa sera la matriz y menos sorpresas tendran los proximos usuarios.
 
 ---
 
