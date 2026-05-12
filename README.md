@@ -335,11 +335,12 @@ Es el caso por defecto en moviles nuevos o usuarios que no la han tocado.
 2. **Ajustes** (icono ⋮ o tres puntos, arriba a la derecha) → **Chats** → **Copia de seguridad**.
 3. Pulsa **Copia de seguridad cifrada de extremo a extremo**.
 4. Pulsa **Activar** (boton verde).
-5. WhatsApp pregunta "Crear contraseña". **No la crees** — pulsa el enlace **"Usar clave de cifrado de 64 digitos"** (esta debajo del campo de contraseña).
-6. Pulsa **Generar tu clave de 64 digitos**.
-7. WhatsApp muestra la clave de 64 caracteres hex. **Screenshot + anotala en un sitio seguro** — si se pierde no es recuperable, ni Meta ni nadie puede restablecerla.
-8. Pulsa **Continuar** -> marca la casilla "He guardado mi clave en un lugar seguro" -> **Crear**.
-9. Vuelve a la pantalla **Copia de seguridad** y pulsa **Hacer copia ahora** (boton verde) para forzar un backup fresco cifrado con esa clave. *Importante*: el `.crypt15` que el script descargue debe ser uno generado **despues** de esta accion, los `.crypt15` antiguos usan la clave anterior (local, no la de 64 hex).
+5. WhatsApp te ofrece primero **"Llave de acceso"** (passkey biometrica/huella) como metodo recomendado. **NO la elijas** — esa llave no sirve para descifrar `.crypt15` con `wa-crypt-tools`. En su lugar pulsa **"Mas opciones"** (es un enlace al final de la misma pantalla, en letra mas pequeña).
+6. En la lista que aparece, elige **"Clave de cifrado de 64 digitos"** (la otra opcion suele ser "Contraseña" — esa tampoco la quieres).
+7. Pulsa **Generar tu clave de 64 digitos**.
+8. WhatsApp muestra la clave de 64 caracteres hex. **Screenshot + anotala en un sitio seguro** — si se pierde no es recuperable, ni Meta ni nadie puede restablecerla.
+9. Pulsa **Continuar** → marca la casilla "He guardado mi clave en un lugar seguro" → **Crear**.
+10. Vuelve a la pantalla **Copia de seguridad** y pulsa **Hacer copia ahora** (boton verde) para forzar un backup fresco cifrado con esa clave. *Importante*: el `.crypt15` que el script descargue debe ser uno generado **despues** de esta accion, los `.crypt15` antiguos usan la clave anterior (local, no la de 64 hex).
 
 #### Escenario B — Ya tiene copia E2E activada, pero con contrasena (no clave)
 
