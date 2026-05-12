@@ -685,7 +685,7 @@ def main():
         f'<style>{_CSS}</style></head><body>'
         f'<div class="app">'
         f'<div class="sidebar">'
-        f'<div class="sidebar-header"><span class="wa-icon">💬</span> WhatsApp Viewer</div>'
+        f'<div class="sidebar-header"><span class="wa-icon">💬</span> Delta Forensics &middot; WhatsApp Viewer</div>'
         f'<div class="chats-list">{sidebar_html}</div>'
         f'</div>'
         f'<div class="main">{panels_html}</div>'

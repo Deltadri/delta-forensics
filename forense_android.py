@@ -2016,7 +2016,8 @@ def generate_html(device_id: str, props: dict, app_counts: dict,
         f'<dl class="info-grid">{dev_rows}</dl></section>\n\n'
         f'{hw_section}\n{bat_section}\n{net_section}\n'
         f'{storage_section}\n{apps_section}\n{wa_section}\n{files_section}\n\n'
-        f'<footer>Informe generado automaticamente por forense_android.py<br>'
+        f'<footer><strong>Delta Forensics</strong><br>'
+        f'Informe generado automaticamente por forense_android.py<br>'
         f'Deltadri &middot; {year}</footer>\n\n'
         f'</div>\n</body>\n</html>'
     )

@@ -27,7 +27,7 @@ Estado real de los metodos por dispositivo probado:
 | Fabricante | Android | OS skin | Metodo legacy | Metodo crypt15 | Notas |
 |---|---|---|---|---|---|
 | **OPPO** | **14** | ColorOS | ✅ Funciona | ✅ Funciona (no probado todavia, debe funcionar) | El unico escenario con `msgstore.db` plaintext extraido via legacy |
-| Realme C71 | 15 | ColorOS 15 (BBK) | ❌ `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` | ✅ Pull funciona (no probado descifrado) | El backup forense general completa; WA requiere clave del titular |
+| Realme C71 | 15 | ColorOS 15 (BBK) | ❌ `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` | ✅ Funciona (pull + descifrado con `--wa-key`) | El backup forense general completa; WA requiere clave del titular |
 | Realme GT7 | 16 | Realme UI | ❌ `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` (Android 16 bloquea el downgrade) | ✅ Funciona | Confirmado en Android 16 — crypt15 sigue siendo viable en la version mas reciente |
 | Huawei P Smart | 9 (EMUI 9) | EMUI | ❌ `adb backup` vuelve vacio | 🟡 Probable que funcione el pull crypt15 | EMUI bloquea backup pero no el pull de /sdcard |
 
