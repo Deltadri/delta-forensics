@@ -89,7 +89,7 @@ sudo pacman -S jdk17-openjdk
 #### Clonar el repositorio
 
 ```bash
-git clone https://github.com/TU_USUARIO/delta-forensics.git
+git clone https://github.com/Deltadri/delta-forensics.git
 cd delta-forensics
 ```
 
@@ -118,7 +118,7 @@ winget install -e --id Python.Python.3.13 --scope machine
 #### Clonar el repositorio
 
 ```powershell
-git clone https://github.com/TU_USUARIO/delta-forensics.git
+git clone https://github.com/Deltadri/delta-forensics.git
 cd delta-forensics
 ```
 
