@@ -692,4 +692,8 @@ Esta herramienta esta desarrollada con fines educativos y de analisis forense au
 
 ## Autor
 
-Deltadri — Practica de analisis forense de dispositivos Android
+Deltadri
+
+[![YouTube](https://img.shields.io/badge/YouTube-@deltadri24-FF0000?logo=youtube&logoColor=white&style=for-the-badge)](https://www.youtube.com/@deltadri24)
+[![X](https://img.shields.io/badge/X-@Deltadri-000000?logo=x&logoColor=white&style=for-the-badge)](https://x.com/Deltadri)
+[![TikTok](https://img.shields.io/badge/TikTok-@deltaadri-000000?logo=tiktok&logoColor=white&style=for-the-badge)](https://www.tiktok.com/@deltaadri)
