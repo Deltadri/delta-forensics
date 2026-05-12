@@ -6,7 +6,20 @@ Suite de herramientas forenses para dispositivos Android. Extrae datos del dispo
 
 ## ⚠️ Estado de compatibilidad real
 
-`forense_android.py` ofrece **dos metodos** de extraccion de WhatsApp y elige automaticamente:
+Este repo son **dos herramientas distintas** que se ejecutan en cadena:
+
+```
+[1] forense_android.py   ──►  extrae del movil   ──►  msgstore.db + wa.db (plaintext)
+[2] wa_viewer.py         ──►  genera el HTML interactivo desde esas DBs
+```
+
+Cada script tiene su propia matriz de compatibilidad **porque dependen de cosas distintas**: el extractor depende del dispositivo (OEM, version Android, WhatsApp instalado), el visor solo depende de la version de WhatsApp del backup. Las trato por separado abajo.
+
+---
+
+### Parte 1 — Compatibilidad de `forense_android.py` (extractor)
+
+Depende del **dispositivo Android**. Ofrece **dos metodos** de extraccion de WhatsApp y elige automaticamente:
 
 - **Metodo `legacy`** (clasico): desinstala WhatsApp moderno -> instala WhatsApp viejo via ADB -> `adb backup` -> reinstala el moderno. Solo funciona si el dispositivo es Android ≤ 13 o el WhatsApp actual tiene `targetSdk < 23`.
 - **Metodo `crypt15`** (no invasivo, fallback): solo hace `adb pull` de `/sdcard/Android/media/com.whatsapp/WhatsApp/` (DBs cifradas + Media sin cifrar). No desinstala nada. Para obtener las DBs en plaintext el titular tiene que activar "Copia E2E" en WhatsApp y aportar la clave de 64 hex (`--wa-key`).
@@ -26,11 +39,27 @@ Estado real de los metodos por dispositivo probado:
 - Si tu dispositivo es **Android 15+** la extraccion WA **probablemente fallara** por el bloqueo de Android contra el downgrade del modelo de permisos. El backup forense general seguira funcionando.
 - Si tu dispositivo es **Huawei/Honor con EMUI 9+** la extraccion WA es **inviable** por bloqueo de OEM.
 
-`wa_viewer.py` es **independiente del dispositivo** — solo necesita el `msgstore.db` y `wa.db` ya descifrados. Si el `forense_android.py` consiguio extraerlos en cualquier movil, el viewer los va a procesar correctamente.
+---
 
-### 🙋 Ayuda a ampliar esta lista
+### Parte 2 — Compatibilidad de `wa_viewer.py` (visor)
 
-Si has probado el script con un dispositivo que **NO** aparece en la tabla — funcione o no funcione — por favor [abre un issue en el repo](https://github.com/Deltadri/delta-forensics/issues/new) indicando:
+`wa_viewer.py` es **independiente del dispositivo** — no toca el movil, solo procesa SQLite plaintext local. Puede usarse con DBs extraidas por `forense_android.py` o con DBs de cualquier otro origen (otra herramienta forense, backup ya descifrado, etc.).
+
+La unica variable que importa aqui es la **version de WhatsApp** que tuviera el movil cuando se hizo el backup, porque eso decide donde estan los nombres de los contactos:
+
+| Version de WhatsApp en el movil | Inputs minimos | Resultado en el HTML |
+|---|---|---|
+| **WhatsApp <= 2.25** (clasico) | `msgstore.db` + `wa.db` | ✅ Todos los nombres correctos. `wa.db` aun tiene `wa_contacts` poblada. |
+| **WhatsApp 2.26+ / Android 16** | `msgstore.db` + `wa.db` | 🟡 Grupos OK, **chats privados salen con numero**. WhatsApp ya no guarda los nombres de contactos individuales dentro de la BD — los lee en runtime de la libreta del SO, que esta fuera del backup. |
+| **WhatsApp 2.26+ / Android 16** | `msgstore.db` + `wa.db` + `--contacts contacts.vcf` | ✅ Todos los nombres correctos. El `.vcf` se exporta desde la app Contactos del telefono — guia paso a paso en la seccion `wa_viewer.py` mas abajo. |
+
+Es decir: si tu backup viene de un movil con WA moderno y los chats privados te salen con numero, **no es un bug del viewer** — es que falta pasarle la libreta del usuario con `--contacts`.
+
+---
+
+### 🙋 Ayuda a ampliar la matriz
+
+Si has probado el extractor con un dispositivo que **NO** aparece en la tabla de arriba — funcione o no funcione — por favor [abre un issue en el repo](https://github.com/Deltadri/delta-forensics/issues/new) indicando:
 
 - **Fabricante y modelo exacto** (p.ej. `Samsung Galaxy A54`, `Xiaomi Redmi Note 12`)
 - **Version de Android** (Ajustes → Acerca del telefono → Version de Android)
