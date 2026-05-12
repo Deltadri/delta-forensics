@@ -6,12 +6,10 @@ Suite de herramientas forenses para dispositivos Android. Extrae datos del dispo
 
 ## ⚠️ Estado de compatibilidad real
 
-Este repo son **dos herramientas distintas** que se ejecutan en cadena:
+Este repo son **dos herramientas independientes**. No se invocan la una a la otra ni hay pipeline automatico: las ejecutas por separado cuando las necesites.
 
-```
-[1] forense_android.py   ──►  extrae del movil   ──►  msgstore.db + wa.db (plaintext)
-[2] wa_viewer.py         ──►  genera el HTML interactivo desde esas DBs
-```
+- **`forense_android.py`** (extractor): habla con el movil via ADB, hace backup forense completo y, entre otras cosas, deja `msgstore.db` + `wa.db` en plaintext.
+- **`wa_viewer.py`** (visor): toma un `msgstore.db` + `wa.db` plaintext ya existentes (vengan del extractor de aqui, de otra herramienta forense, o de un backup que ya tenias) y genera un HTML interactivo de chats. No toca el movil.
 
 Cada script tiene su propia matriz de compatibilidad **porque dependen de cosas distintas**: el extractor depende del dispositivo (OEM, version Android, WhatsApp instalado), el visor solo depende de la version de WhatsApp del backup. Las trato por separado abajo.
 
@@ -30,14 +28,18 @@ Estado real de los metodos por dispositivo probado:
 |---|---|---|---|---|---|
 | **OPPO** | **14** | ColorOS | ✅ Funciona | ✅ Funciona (no probado todavia, debe funcionar) | El unico escenario con `msgstore.db` plaintext extraido via legacy |
 | Realme C71 | 15 | ColorOS 15 (BBK) | ❌ `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` | ✅ Pull funciona (no probado descifrado) | El backup forense general completa; WA requiere clave del titular |
+| Realme GT7 | 16 | Realme UI | ❌ `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` (Android 16 bloquea el downgrade) | ✅ Funciona | Confirmado en Android 16 — crypt15 sigue siendo viable en la version mas reciente |
 | Huawei P Smart | 9 (EMUI 9) | EMUI | ❌ `adb backup` vuelve vacio | 🟡 Probable que funcione el pull crypt15 | EMUI bloquea backup pero no el pull de /sdcard |
 
-**En la practica:**
+**En la practica** — cada situacion tiene un metodo que funciona, raramente te quedas sin opciones:
 
-- Si tu dispositivo es **Android 13 o anterior** (cualquier fabricante salvo Huawei/EMUI 9+) tiene MUY altas probabilidades de funcionar completo, igual que el OPPO probado.
-- Si tu dispositivo es **Android 14** (cualquier fabricante salvo Huawei/EMUI o BBK con Permission Monitor activo) deberia funcionar — pero solo se ha confirmado en OPPO ColorOS, ten el movil a mano por si falla algun preflight.
-- Si tu dispositivo es **Android 15+** la extraccion WA **probablemente fallara** por el bloqueo de Android contra el downgrade del modelo de permisos. El backup forense general seguira funcionando.
-- Si tu dispositivo es **Huawei/Honor con EMUI 9+** la extraccion WA es **inviable** por bloqueo de OEM.
+- **Android 13 o anterior** (cualquier fabricante salvo Huawei/EMUI 9+): el metodo **legacy** funciona y es lo que el script elige por defecto. Te deja directamente `msgstore.db` y `wa.db` en plaintext sin necesidad de clave ni pasos extra. Lanza `python3 forense_android.py` sin flags y listo.
+
+- **Android 14**: legacy *deberia* colar — confirmado en OPPO ColorOS, probable en la mayoria del resto. Si el preflight detecta que no es viable (Realme/OnePlus con Permission Monitor activo, WhatsApp con `targetSdk` demasiado alto, etc.), el script cae automaticamente a **crypt15**. Para obtener los datos en claro pasale entonces `--wa-key` con la clave de 64 hex que te dara el titular (ver mas abajo como sacarla).
+
+- **Android 15 o superior** (incluyendo Android 16): legacy **no funciona** — Android bloquea explicitamente el downgrade del modelo de permisos. El script lo detecta de entrada y elige **crypt15** automaticamente, que **si funciona**. Confirmado en Realme C71 (Android 15) y Realme GT7 (Android 16). Pasa `--wa-key` si quieres los datos descifrados al vuelo; si no, se preservan los `.crypt15` cifrados + Media en claro + hashes SHA-256 + instrucciones de descifrado para hacerlo despues. **El backup forense general (almacenamiento, apps, estado del sistema) corre normal independientemente** del metodo WA elegido.
+
+- **Huawei/Honor con EMUI 9+**: legacy bloqueado silenciosamente — `adb backup` vuelve vacio por restriccion del OEM. **Crypt15 probablemente funcione** (el pull de `/sdcard/Android/media/com.whatsapp/` sigue siendo viable en EMUI porque no depende de `adb backup`), pero todavia no esta confirmado en produccion. Si lo pruebas, [abre un issue](https://github.com/Deltadri/delta-forensics/issues/new) con el resultado.
 
 ---
 
@@ -206,24 +208,27 @@ Extrae almacenamiento, apps, estado del sistema y opcionalmente WhatsApp. Genera
 ```
               ¿Que Android tiene el movil?
                         │
-        ┌───────────────┼───────────────┐
-        ▼               ▼               ▼
-    Android <= 13   Android 14    Android 15+
-        │               │               │
-        ▼               ▼               ▼
-   metodo legacy   metodo legacy   metodo crypt15
-   (auto lo elige)  (auto lo elige   (auto lo elige
-                    si funciona)     siempre)
-                                     ¿Quieres datos
-                                     descifrados?
-                                          │
-                                  ┌───────┴───────┐
-                                  ▼               ▼
-                                 SI               NO
-                          Pide la clave    Te basta con
-                          de 64 hex al     preservar los
-                          titular y pasa   .crypt15 + Media
-                          --wa-key X
+        ┌───────────────┼─────────────────────────┐
+        ▼               ▼                         ▼
+    Android <= 13   Android 14          Android 15+ (incl. 16)
+        │               │                         │
+        ▼               ▼                         ▼
+   metodo legacy   metodo legacy           metodo crypt15
+   (auto lo elige)  (auto lo elige           (auto lo elige
+                    si funciona,              siempre — legacy
+                    si no cae a crypt15)      esta bloqueado)
+                                              │
+                                              ▼
+                                       ¿Quieres datos
+                                       descifrados?
+                                              │
+                                      ┌───────┴───────┐
+                                      ▼               ▼
+                                     SI               NO
+                              Pide la clave    Te basta con
+                              de 64 hex al     preservar los
+                              titular y pasa   .crypt15 + Media
+                              --wa-key X
 ```
 
 **Tu primera ejecucion deberia ser siempre:**
@@ -320,17 +325,52 @@ Esto solo reinstala WhatsApp con los APKs guardados, sin tocar nada mas.
 
 ### Como conseguir la clave de 64 hex
 
-**Solo el titular del dispositivo puede sacarla**. No hay forma de extraerla sin root. Pasos en el movil:
+**Solo el titular del dispositivo puede sacarla**. No hay forma de extraerla sin root (la clave vive en `EndToEndEncryptionStoreFlatBuffer` dentro de `/data/data/com.whatsapp/`, inaccesible vía ADB normal). Hay **tres escenarios** segun como tenga el titular configurada la copia E2E:
 
-1. Abre WhatsApp.
-2. **Ajustes** → **Chats** → **Copia de seguridad**.
-3. **"Copia de seguridad cifrada de extremo a extremo"** → Activar.
-4. Elegir **"Usar clave de cifrado de 64 digitos"** (NO "Crear contrasena").
-5. Confirmar con PIN/huella del movil.
-6. WhatsApp muestra una clave de **64 caracteres hex**. Screenshot o anotala — si la pierdes no es recuperable.
-7. Pulsar **"Hacer copia"** (boton verde) para forzar un backup fresco con esa clave.
+#### Escenario A — El titular nunca ha activado la copia E2E
 
-Despues, pasale la clave al script con `--wa-key <CLAVE>` (con o sin separadores `:` / `-` / espacios, da igual). Si prefieres, exportala como fichero y usa `--wa-key-file`.
+Es el caso por defecto en moviles nuevos o usuarios que no la han tocado.
+
+1. Abre **WhatsApp**.
+2. **Ajustes** (icono ⋮ o tres puntos, arriba a la derecha) → **Chats** → **Copia de seguridad**.
+3. Pulsa **Copia de seguridad cifrada de extremo a extremo**.
+4. Pulsa **Activar** (boton verde).
+5. WhatsApp pregunta "Crear contraseña". **No la crees** — pulsa el enlace **"Usar clave de cifrado de 64 digitos"** (esta debajo del campo de contraseña).
+6. Pulsa **Generar tu clave de 64 digitos**.
+7. WhatsApp muestra la clave de 64 caracteres hex. **Screenshot + anotala en un sitio seguro** — si se pierde no es recuperable, ni Meta ni nadie puede restablecerla.
+8. Pulsa **Continuar** -> marca la casilla "He guardado mi clave en un lugar seguro" -> **Crear**.
+9. Vuelve a la pantalla **Copia de seguridad** y pulsa **Hacer copia ahora** (boton verde) para forzar un backup fresco cifrado con esa clave. *Importante*: el `.crypt15` que el script descargue debe ser uno generado **despues** de esta accion, los `.crypt15` antiguos usan la clave anterior (local, no la de 64 hex).
+
+#### Escenario B — Ya tiene copia E2E activada, pero con contrasena (no clave)
+
+WhatsApp protege la copia con una contrasena que el titular eligio. Para nuestros fines hay dos rutas:
+
+- **Pedirle la contrasena tal cual** y pasarla al script con `wadecrypt --password "frase del titular" msgstore.db.crypt15 msgstore.db` (en lugar de `--wa-key`). Nota: `forense_android.py` con `--wa-key` no cubre el flow de password — para descifrar tras la extraccion usa `wadecrypt` a mano (`pip install wa-crypt-tools`).
+- **Convertirla a clave de 64 digitos**: Ajustes → Chats → Copia de seguridad → Copia E2E → **Cambiar contraseña** → elige **"Usar clave de cifrado de 64 digitos"** y sigue el Escenario A desde el paso 6.
+
+#### Escenario C — Ya tiene copia E2E activada con clave de 64 digitos (caso comun en usuarios tecnicos)
+
+El titular ya activo la copia con clave y solo necesita **verla** otra vez:
+
+1. **WhatsApp** → **Ajustes** → **Chats** → **Copia de seguridad** → **Copia de seguridad cifrada de extremo a extremo**.
+2. Pulsa **Ver clave de 64 digitos**.
+3. Confirmar con **PIN o huella** del telefono.
+4. WhatsApp muestra la clave actual. **No cambia ni se regenera**, es la misma de siempre.
+
+#### Uso de la clave con el script
+
+Una vez tienes la clave, pasala al script con `--wa-key <CLAVE>`. Acepta cualquier formato (con o sin separadores `:` / `-` / espacios, mayusculas o minusculas — el script normaliza):
+
+```bash
+# Todas estas formas son equivalentes:
+--wa-key 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+--wa-key 1234:5678:90ab:cdef:1234:5678:90ab:cdef:1234:5678:90ab:cdef:1234:5678:90ab:cdef
+--wa-key "1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678 90AB CDEF 1234 5678 90AB CDEF"
+```
+
+Si prefieres pasarla por fichero (mas seguro que en el historial del shell), exporta `encrypted_backup.key` y usa `--wa-key-file ruta/al/encrypted_backup.key`.
+
+Procedimiento oficial (puede cambiar con cada actualizacion mayor de WhatsApp): ver [Centro de ayuda — Activar copia cifrada E2E](https://faq.whatsapp.com/1246476872801203/?cms_platform=android&locale=es_LA).
 
 ### Que ficheros genera el script segun el metodo
 
