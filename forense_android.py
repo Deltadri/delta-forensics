@@ -557,10 +557,15 @@ def _wa_detect_compatibility(props: dict) -> dict:
 
     Decide si el metodo legacy (instalar WA viejo + adb backup) tiene alguna
     posibilidad de funcionar:
-      - Falla en Android >= 14 (SDK 34+) si WA actual tiene targetSdk >= 23
-        -> INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE bloquea el install legacy
-      - Falla siempre en Huawei EMUI 9+ (adb backup devuelve .ab vacio)
-      - Funciona en el resto (Android 6-13, OEMs no-EMUI, etc.)
+      - Falla en Android >= 15 (SDK 35+) con WA targetSdk >= 23: Android
+        bloquea el install del APK legacy con INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE
+        y NO hay flag adb que lo sortee (probado en Realme C71 Android 15 y
+        Realme GT7 Android 16).
+      - Falla siempre en Huawei EMUI 9+ (adb backup devuelve .ab vacio).
+      - Funciona en Android 6-14 (incl. 14 con WA moderno): la cadena
+        `pm uninstall -k` + `pm install --bypass-low-target-sdk-block` evita
+        que Android lo trate como downgrade real, asi que el bloqueo de
+        PERMISSION_MODEL_DOWNGRADE no se dispara. Confirmado en OPPO Android 14.
 
     Devuelve dict con todas las metricas + boolean 'legacy_viable' + 'reason' si no lo es.
     """
@@ -618,14 +623,19 @@ def _wa_detect_compatibility(props: dict) -> dict:
         )
         return result
 
+    # Android 14 (SDK 34) con WA moderno funciona via `pm uninstall -k` + install
+    # con --bypass-low-target-sdk-block (confirmado en OPPO Android 14). El corte
+    # real esta en Android 15+ (SDK 35+), donde el bloqueo es estricto y el bypass
+    # no sortea PERMISSION_MODEL_DOWNGRADE (confirmado en Realme C71 y GT7).
     if (result["wa_target_sdk"] is not None
             and result["wa_target_sdk"] >= 23
-            and result["android_sdk"] >= 34):
+            and result["android_sdk"] >= 35):
         result["reason_legacy_blocked"] = (
             f"Android {result['android_version']} (SDK {result['android_sdk']}) + "
             f"WhatsApp targetSdk={result['wa_target_sdk']}: el install del APK legacy "
-            f"(targetSdk=19) sera rechazado por Android con "
-            "INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE. No hay flag adb que lo sortee."
+            f"(targetSdk=19) sera rechazado con INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE. "
+            f"En Android 15+ el flag --bypass-low-target-sdk-block NO sortea este bloqueo "
+            f"(probado en Realme C71 Android 15 y Realme GT7 Android 16)."
         )
         return result
 
