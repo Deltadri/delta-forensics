@@ -284,13 +284,15 @@ Extrae almacenamiento, apps, estado del sistema y opcionalmente WhatsApp. Genera
                               --wa-key X
 ```
 
-**Tu primera ejecucion deberia ser siempre:**
+**Tu primera ejecucion deberia ser siempre con auto-deteccion:**
 
 ```bash
-python3 forense_android.py
+python3 forense_android.py --wa-method auto
 ```
 
 El script diagnostica el dispositivo, te dice que metodo va a usar, y te explica en el log que flags necesitas si quieres mejor resultado. **No hay que adivinar nada**.
+
+> Si lanzas `python3 forense_android.py` SIN argumentos, te muestra un mini-help con ejemplos en vez de arrancar — proteccion para no desinstalar WhatsApp sin querer. Para ver TODAS las opciones disponibles usa `--help`.
 
 ### Tabla completa de flags
 
@@ -299,6 +301,7 @@ El script diagnostica el dispositivo, te dice que metodo va a usar, y te explica
 | `--skip-wa` | desactivado | Omite la fase 5/8 entera (sin tocar WhatsApp). El resto del backup forense corre normal. |
 | `--only-wa` | desactivado | Lo contrario: salta las fases pesadas (2/8 almacenamiento, 3/8 apps, 4/8 estado) y va directo a WhatsApp. Util para reintentos rapidos. Incompatible con `--skip-wa`. |
 | `--wa-method {auto,legacy,crypt15}` | `auto` | Elige metodo de extraccion WhatsApp. Ver tabla abajo. |
+| `--force-legacy` | desactivado | Permite arrancar `--wa-method legacy` aunque el diagnostico diga que NO es viable. Por defecto el script aborta para no desinstalar WhatsApp inutilmente. **Requiere** `--wa-method legacy` explicito — si lo pasas con `auto` / `crypt15` / `--skip-wa`, el script aborta con `[ERROR]` para evitar confusion. |
 | `--wa-key HEX64` | — | Clave de 64 hex para descifrar `.crypt15`. Acepta `:`, `-`, espacios como separadores. Ej: `--wa-key TU_CLAVE_DE_64_HEX`. |
 | `--wa-key-file PATH` | — | Alternativa a `--wa-key`: ruta al fichero `encrypted_backup.key` (binario). |
 | `--device SERIAL` | autodetectado | Serial del dispositivo si hay >1 conectado. Sacalo de `adb devices`. Sin este flag, el script aborta cuando detecta varios moviles. |
@@ -318,7 +321,7 @@ El script diagnostica el dispositivo, te dice que metodo va a usar, y te explica
 
 ```bash
 # El default ya hace lo correcto:
-python3 forense_android.py
+python3 forense_android.py --wa-method auto
 ```
 Te genera `msgstore.db` plaintext directamente via legacy.
 
@@ -508,21 +511,20 @@ Genera un HTML interactivo con todos los chats, mensajes, miniaturas de imagenes
 > En Windows usa `python` en lugar de `python3`.
 
 ```bash
-# Usando rutas por defecto (db/msgstore.db y db/wa.db)
-python3 wa_viewer.py
-
-# Especificando rutas manualmente — Linux/macOS
+# Linux/macOS — especifica las rutas a las DBs ya extraidas
 python3 wa_viewer.py \
     --msgstore ~/backup_movil/2026-05-11/whatsapp/extracted/apps/com.whatsapp/db/msgstore.db \
     --wadb     ~/backup_movil/2026-05-11/whatsapp/extracted/apps/com.whatsapp/db/wa.db \
     --output   chats_whatsapp.html
 
-# Especificando rutas manualmente — Windows
+# Windows — mismo flujo, ajusta separadores de ruta
 python wa_viewer.py ^
     --msgstore "%USERPROFILE%\backup_movil\2026-05-11\whatsapp\extracted\apps\com.whatsapp\db\msgstore.db" ^
     --wadb     "%USERPROFILE%\backup_movil\2026-05-11\whatsapp\extracted\apps\com.whatsapp\db\wa.db" ^
     --output   chats_whatsapp.html
 ```
+
+> Si lanzas `python3 wa_viewer.py` SIN argumentos te muestra un mini-help con ejemplos. Para ver TODAS las opciones disponibles usa `--help`.
 
 Abre el HTML generado en Chrome o Firefox.
 

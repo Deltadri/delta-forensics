@@ -1545,14 +1545,16 @@ def _wa_extract_legacy(sdk: str, props: dict | None = None) -> dict:
 def extract_whatsapp(sdk: str, props: dict | None = None,
                     method: str = "auto",
                     key_hex: str | None = None,
-                    key_file: str | None = None) -> dict:
+                    key_file: str | None = None,
+                    force_legacy: bool = False) -> dict:
     """Dispatcher de extraccion WhatsApp. Elige entre metodos:
 
     - 'auto'    (default): diagnostica el dispositivo. Si legacy es viable lo
                 intenta; si falla, cae a crypt15. Si legacy NO es viable salta
                 directamente a crypt15.
     - 'legacy': fuerza el metodo A (instalar WA viejo + adb backup + restaurar).
-                Avisa si el diagnostico dice que no es viable, pero lo intenta.
+                Si el diagnostico dice que NO es viable, aborta — salvo que se
+                pase tambien force_legacy=True, en cuyo caso lo intenta igualmente.
     - 'crypt15': fuerza el metodo B (pull no-invasivo de /sdcard/Android/media/
                 com.whatsapp/WhatsApp/ + descifrado opcional con clave).
 
@@ -1598,10 +1600,30 @@ def extract_whatsapp(sdk: str, props: dict | None = None,
 
     # ---- Dispatcher por --wa-method ----
     if method == "legacy":
+        if not diag["legacy_viable"] and not force_legacy:
+            log("")
+            log("[WA]  ABORTANDO: --wa-method legacy forzado pero el diagnostico dice")
+            log(f"        que NO es viable. Razon: {diag['reason_legacy_blocked']}")
+            log("")
+            log("[WA]  Si arranco igualmente, el script desinstalaria WhatsApp del")
+            log("        movil para instalar la version vieja y el 'adb backup'")
+            log("        fallara despues, dejando al titular sin WhatsApp hasta que")
+            log("        se restaure manualmente con --restore-wa.")
+            log("")
+            log("[WA]  Opciones (relanza con UNA de estas):")
+            log("        1) --wa-method auto        (recomendado: elige solo)")
+            log("        2) --wa-method crypt15     (forzado, no invasivo)")
+            log("        3) --wa-method legacy --force-legacy   (intentar igualmente)")
+            log("")
+            return {
+                "status": "aborted",
+                "reason": f"legacy no viable ({diag['reason_legacy_blocked']}) y sin --force-legacy",
+                "diagnostic": diag,
+            }
         if not diag["legacy_viable"]:
             log("[WA]  ATENCION: --wa-method legacy forzado pero el diagnostico dice")
             log(f"        que NO es viable. Razon: {diag['reason_legacy_blocked']}")
-            log("        Procediendo igual (tu lo pediste explicitamente)...")
+            log("        Procediendo igual (--force-legacy presente, tu eliges)...")
         result = _wa_extract_legacy(sdk, props)
         result["diagnostic"] = diag
         return result
@@ -2029,8 +2051,25 @@ def generate_html(device_id: str, props: dict, app_counts: dict,
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    epilog = (
+        "Ejemplos:\n"
+        "  python3 forense_android.py --wa-method auto\n"
+        "      Backup completo + WhatsApp con auto-deteccion del metodo.\n"
+        "\n"
+        "  python3 forense_android.py --only-wa --wa-method crypt15 --wa-key TU_CLAVE\n"
+        "      Solo WhatsApp (rapido), descifrado con la clave del titular.\n"
+        "\n"
+        "  python3 forense_android.py --skip-wa\n"
+        "      Solo backup forense general, sin tocar WhatsApp.\n"
+        "\n"
+        "  python3 forense_android.py --restore-wa ~/backup_movil/<FECHA>/whatsapp/apks_originales\n"
+        "      Modo recuperacion: reinstala WhatsApp tras un run fallido.\n"
+    )
     parser = argparse.ArgumentParser(
-        description="Backup forense Android + extraccion WhatsApp"
+        prog="forense_android.py",
+        description="Delta Forensics - Backup forense Android + extraccion WhatsApp",
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--skip-wa", action="store_true",
@@ -2048,14 +2087,14 @@ def main() -> None:
         help="Modo recuperacion: reinstala WhatsApp desde una carpeta 'apks_originales' "
              "de un run anterior. Util cuando un run previo fallo entre uninstall y "
              "reinstall y dejo WhatsApp en estado uninstalled-keep-data. No realiza el "
-             "backup forense — solo la restauracion. Ej: --restore-wa "
+             "backup forense - solo la restauracion. Ej: --restore-wa "
              "~/backup_movil/2026-05-12_02-18-31/whatsapp/apks_originales"
     )
     parser.add_argument(
         "--device", metavar="SERIAL",
         help="Serial del dispositivo (obligatorio si hay mas de uno conectado). "
              "Sacalo de 'adb devices'. Sin este flag y con multiples dispositivos, "
-             "el script aborta — proteccion forense contra actuar sobre el movil equivocado."
+             "el script aborta - proteccion forense contra actuar sobre el movil equivocado."
     )
     parser.add_argument(
         "--wa-method", choices=("auto", "legacy", "crypt15"), default="auto",
@@ -2066,6 +2105,13 @@ def main() -> None:
              "'crypt15' fuerza el metodo no invasivo (pull de /sdcard/Android/media/"
              "com.whatsapp/, requiere clave de 64 hex para descifrar si quieres "
              "los datos en claro)."
+    )
+    parser.add_argument(
+        "--force-legacy", action="store_true",
+        help="Permite arrancar --wa-method legacy aunque el diagnostico diga que NO "
+             "es viable en este dispositivo (Android 14+/15+ con WA moderno). Por "
+             "defecto el script aborta para no desinstalar WhatsApp inutilmente. "
+             "Usalo solo si sabes lo que haces - el legacy va a fallar igualmente."
     )
     parser.add_argument(
         "--wa-key", metavar="HEX64",
@@ -2080,10 +2126,23 @@ def main() -> None:
         help="Alternativa a --wa-key: ruta al fichero 'encrypted_backup.key' (crypt15) o "
              "'key' (crypt14). Pasado tal cual al primer argumento de wadecrypt."
     )
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(0)
     args = parser.parse_args()
 
     if args.skip_wa and args.only_wa:
         print("[ERROR] --skip-wa y --only-wa son incompatibles. Elige uno.")
+        sys.exit(2)
+
+    if args.force_legacy and args.wa_method != "legacy":
+        print(f"[ERROR] --force-legacy solo tiene sentido con --wa-method legacy.")
+        print(f"        Has pasado --wa-method {args.wa_method}, asi que el flag no")
+        print(f"        haria nada. Quita --force-legacy o cambia --wa-method a legacy.")
+        sys.exit(2)
+
+    if args.force_legacy and args.skip_wa:
+        print("[ERROR] --force-legacy y --skip-wa son incompatibles (uno fuerza WA, el otro lo omite).")
         sys.exit(2)
 
     check_prerequisites()
@@ -2136,6 +2195,7 @@ def main() -> None:
             method=args.wa_method,
             key_hex=args.wa_key,
             key_file=args.wa_key_file,
+            force_legacy=args.force_legacy,
         )
 
     # Inventario despues de toda la extraccion: el HTML muestra cifras reales

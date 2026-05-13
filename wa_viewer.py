@@ -12,7 +12,18 @@ from pathlib import Path
 
 def _parse_args():
     import argparse
-    p = argparse.ArgumentParser(description="WhatsApp Chat Viewer — genera HTML desde msgstore.db")
+    epilog = (
+        "Ejemplos:\n"
+        "  python3 wa_viewer.py --msgstore msgstore.db --wadb wa.db\n"
+        "  python3 wa_viewer.py --msgstore msgstore.db --wadb wa.db \\\n"
+        "                       --contacts contacts.vcf --output chats.html\n"
+    )
+    p = argparse.ArgumentParser(
+        prog="wa_viewer.py",
+        description="Delta Forensics - Visor de chats WhatsApp en HTML",
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--msgstore",     default="db/msgstore.db",  help="Ruta a msgstore.db")
     p.add_argument("--wadb",         default="db/wa.db",        help="Ruta a wa.db")
     p.add_argument("--output",       default="wa_viewer.html",  help="Archivo HTML de salida")
@@ -23,6 +34,9 @@ def _parse_args():
     p.add_argument("--default-cc",   default="34",
                    help="Codigo de pais por defecto para numeros locales del VCF "
                         "sin prefijo internacional (default: 34 / Espana).")
+    if len(sys.argv) == 1:
+        p.print_help()
+        sys.exit(0)
     return p.parse_args()
 
 _args        = _parse_args()
