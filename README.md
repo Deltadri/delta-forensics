@@ -4,6 +4,31 @@ Suite de herramientas forenses para dispositivos Android. Extrae datos del dispo
 
 ---
 
+## 🚀 Quick Start
+
+Caso tipico: tienes un Android moderno (15 o 16), el titular te da la clave de 64 hex, y quieres ver los chats en HTML.
+
+```bash
+# 1) Instala wa-crypt-tools (ver seccion Instalacion abajo para PEP 668 / Windows)
+pipx install wa-crypt-tools
+
+# 2) Extrae solo WhatsApp del movil (no toca el resto)
+python3 forense_android.py --only-wa --wa-method crypt15 --wa-key TU_CLAVE_DE_64_HEX
+
+# 3) Genera el HTML con nombres de contactos (exporta contacts.vcf desde Contactos de Google)
+python3 wa_viewer.py \
+    --msgstore ~/backup_movil/<FECHA>/whatsapp/decrypted/msgstore.db \
+    --wadb     ~/backup_movil/<FECHA>/whatsapp/decrypted/wa.db \
+    --contacts ~/Descargas/contacts.vcf \
+    --output   chats.html
+
+# 4) Abre chats.html en Chrome o Firefox.
+```
+
+¿Otro escenario? Ver [seccion Uso](#uso) abajo (Android ≤ 14, sin clave, solo backup forense, varios moviles, etc.). ¿Como saca el titular la clave de 64 hex? Ver [Como conseguir la clave](#como-conseguir-la-clave-de-64-hex).
+
+---
+
 ## ⚠️ Estado de compatibilidad real
 
 Este repo son **dos herramientas independientes**. No se invocan la una a la otra ni hay pipeline automatico: las ejecutas por separado cuando las necesites.
@@ -19,7 +44,7 @@ Cada script tiene su propia matriz de compatibilidad **porque dependen de cosas 
 
 Depende del **dispositivo Android**. Ofrece **dos metodos** de extraccion de WhatsApp y elige automaticamente:
 
-- **Metodo `legacy`** (clasico): desinstala WhatsApp moderno -> instala WhatsApp viejo via ADB -> `adb backup` -> reinstala el moderno. Solo funciona si el dispositivo es Android ≤ 13 o el WhatsApp actual tiene `targetSdk < 23`.
+- **Metodo `legacy`** (clasico): desinstala WhatsApp moderno -> instala WhatsApp viejo via ADB -> `adb backup` -> reinstala el moderno. Funciona en Android ≤ 14 (la cadena `pm uninstall -k` + `pm install --bypass-low-target-sdk-block` sortea el bloqueo de Android 14). En Android 15+ ya no es viable: el `PERMISSION_MODEL_DOWNGRADE` es estricto y no hay flag adb que lo sortee.
 - **Metodo `crypt15`** (no invasivo, fallback): solo hace `adb pull` de `/sdcard/Android/media/com.whatsapp/WhatsApp/` (DBs cifradas + Media sin cifrar). No desinstala nada. Para obtener las DBs en plaintext el titular tiene que activar "Copia E2E" en WhatsApp y aportar la clave de 64 hex (`--wa-key`).
 
 Estado real de los metodos por dispositivo probado:
@@ -292,7 +317,7 @@ python3 forense_android.py --wa-method auto
 
 El script diagnostica el dispositivo, te dice que metodo va a usar, y te explica en el log que flags necesitas si quieres mejor resultado. **No hay que adivinar nada**.
 
-> Si lanzas `python3 forense_android.py` SIN argumentos, te muestra un mini-help con ejemplos en vez de arrancar — proteccion para no desinstalar WhatsApp sin querer. Para ver TODAS las opciones disponibles usa `--help`.
+> Si lanzas `python3 forense_android.py` SIN argumentos, te muestra el `--help` con todos los flags y ejemplos en vez de arrancar — proteccion para no desinstalar WhatsApp sin querer.
 
 ### Tabla completa de flags
 
@@ -312,37 +337,40 @@ El script diagnostica el dispositivo, te dice que metodo va a usar, y te explica
 | `--wa-method` | Que hace | Cuando usarlo | Requisitos |
 |---|---|---|---|
 | **`auto`** (default) | Diagnostica el dispositivo y elige `legacy` si es viable, si no `crypt15`. Si `legacy` falla cae a `crypt15`. | **Siempre** salvo que sepas exactamente que quieres. | Ninguno |
-| **`legacy`** | Fuerza: desinstala WA -> instala WA viejo -> `adb backup` -> reinstala WA original. Te da `msgstore.db` plaintext directamente. | Android <= 13 o casos donde sabes que va a colar. | `java` en PATH |
-| **`crypt15`** | Solo `adb pull` de `/sdcard/Android/media/com.whatsapp/WhatsApp/`. Salida cifrada salvo que pases `--wa-key`. NO modifica el WhatsApp del movil. | Android 14+ o cuando quieres CERO riesgo de tocar el WhatsApp del titular. | `pip install wa-crypt-tools` (solo si `--wa-key`) |
+| **`legacy`** | Fuerza: desinstala WA -> instala WA viejo -> `adb backup` -> reinstala WA original. Te da `msgstore.db` plaintext directamente. | Android <= 14 o casos donde sabes que va a colar. | `java` en PATH |
+| **`crypt15`** | Solo `adb pull` de `/sdcard/Android/media/com.whatsapp/WhatsApp/`. Salida cifrada salvo que pases `--wa-key`. NO modifica el WhatsApp del movil. | Android 15+ o cuando quieres CERO riesgo de tocar el WhatsApp del titular. | `pipx install wa-crypt-tools` (solo si `--wa-key`) |
 
 ### Ejemplos por escenario
 
-**Mi movil es Android 13 o anterior (OPPO, Samsung, Pixel viejo, etc.):**
+**Mi movil es Android 14 o anterior (OPPO, Samsung, Pixel, etc.):**
 
 ```bash
 # El default ya hace lo correcto:
 python3 forense_android.py --wa-method auto
 ```
-Te genera `msgstore.db` plaintext directamente via legacy.
+Te genera `msgstore.db` plaintext directamente via legacy. En Android 14 el script desinstala WhatsApp temporalmente para meter el APK viejo y lo restaura al final automaticamente — confirmado en OPPO Android 14.
 
-**Mi movil es Android 14/15 y SI puedo pedir la clave al titular:**
+**Mi movil es Android 15 o superior (incl. 16) y SI puedo pedir la clave al titular:**
 
 ```bash
 # 1) El titular en SU movil:
-#    WA -> Ajustes -> Chats -> Copia de seguridad -> "Copia E2E" -> activar
-#    Elegir "Usar clave de 64 digitos" (NO password)
-#    Apuntar la clave que sale
-#    Pulsar "Hacer copia" (boton verde)
+#    WA -> Ajustes -> Chats -> Copia de seguridad -> Copia cifrada E2E
+#    Si no la tiene activada: Activar -> "Mas opciones" (NO la "Llave de
+#      acceso" biometrica) -> "Clave de cifrado de 64 digitos" -> Generar
+#    Si ya la tiene activada: "Ver clave de 64 digitos" (PIN/huella)
+#    Apuntar la clave; pulsar "Hacer copia ahora" para forzar un backup
+#    fresco con esa clave.
+#    Procedimiento detallado en la seccion "Como conseguir la clave" abajo.
 
 # 2) En tu portatil con el movil enchufado:
-pip install wa-crypt-tools
+pipx install wa-crypt-tools        # ver seccion Instalacion si te falla por PEP 668
 python3 forense_android.py \
     --wa-method crypt15 \
     --wa-key TU_CLAVE_DE_64_HEX
 ```
 Te genera `~/backup_movil/.../whatsapp/decrypted/msgstore.db` plaintext que luego pasas a `wa_viewer.py`.
 
-**Mi movil es Android 14/15 y NO tengo la clave (preservacion forense):**
+**Mi movil es Android 15+ y NO tengo la clave (preservacion forense):**
 
 ```bash
 python3 forense_android.py --wa-method crypt15
@@ -358,7 +386,7 @@ python3 forense_android.py --skip-wa
 **Solo me interesa WhatsApp, sáltate todo lo demás (extraccion rapida o reintento):**
 
 ```bash
-python3 forense_android.py --only-wa --wa-method crypt15 --wa-key <CLAVE_64HEX>
+python3 forense_android.py --only-wa --wa-method crypt15 --wa-key TU_CLAVE_DE_64_HEX
 ```
 El script salta las fases 2/8 (almacenamiento), 3/8 (apps) y 4/8 (estado del sistema). Sigue generando el informe HTML y los hashes SHA-256 para los ficheros de WhatsApp. Tarda 30 s en vez de 10-15 min.
 
@@ -402,7 +430,7 @@ Es el caso por defecto en moviles nuevos o usuarios que no la han tocado.
 
 WhatsApp protege la copia con una contrasena que el titular eligio. Para nuestros fines hay dos rutas:
 
-- **Pedirle la contrasena tal cual** y pasarla al script con `wadecrypt --password "frase del titular" msgstore.db.crypt15 msgstore.db` (en lugar de `--wa-key`). Nota: `forense_android.py` con `--wa-key` no cubre el flow de password — para descifrar tras la extraccion usa `wadecrypt` a mano (`pip install wa-crypt-tools`).
+- **Pedirle la contrasena tal cual** y pasarla al script con `wadecrypt --password "frase del titular" msgstore.db.crypt15 msgstore.db` (en lugar de `--wa-key`). Nota: `forense_android.py` con `--wa-key` no cubre el flow de password — para descifrar tras la extraccion usa `wadecrypt` a mano (`pipx install wa-crypt-tools`).
 - **Convertirla a clave de 64 digitos**: Ajustes → Chats → Copia de seguridad → Copia E2E → **Cambiar contraseña** → elige **"Usar clave de cifrado de 64 digitos"** y sigue el Escenario A desde el paso 6.
 
 #### Escenario C — Ya tiene copia E2E activada con clave de 64 digitos (caso comun en usuarios tecnicos)
@@ -431,7 +459,7 @@ Procedimiento oficial (puede cambiar con cada actualizacion mayor de WhatsApp): 
 
 ### Que ficheros genera el script segun el metodo
 
-**Caso A — Metodo `legacy` (Android <= 13, OPPO Android 14, etc.):**
+**Caso A — Metodo `legacy` (Android <= 14):**
 
 ```
 ~/backup_movil/YYYY-MM-DD_HH-MM-SS/
@@ -524,7 +552,7 @@ python wa_viewer.py ^
     --output   chats_whatsapp.html
 ```
 
-> Si lanzas `python3 wa_viewer.py` SIN argumentos te muestra un mini-help con ejemplos. Para ver TODAS las opciones disponibles usa `--help`.
+> Si lanzas `python3 wa_viewer.py` SIN argumentos te muestra el `--help` con todos los flags y ejemplos.
 
 Abre el HTML generado en Chrome o Firefox.
 
@@ -638,7 +666,7 @@ El script lo detecta y espera 90 s a que reaceptes la huella RSA en el movil. **
 
 ### `INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE` en el metodo legacy
 
-Tu movil es Android 14+ con WhatsApp moderno (`targetSdk >= 23`). **El metodo legacy no puede funcionar** en este escenario, es un bloqueo del propio Android. Usa `--wa-method crypt15` en su lugar.
+Tu movil es Android 15+ con WhatsApp moderno (`targetSdk >= 23`). **El metodo legacy no puede funcionar** en este escenario, es un bloqueo del propio Android que el flag `--bypass-low-target-sdk-block` no consigue sortear (confirmado en Realme C71 Android 15 y Realme GT7 Android 16). Usa `--wa-method crypt15` en su lugar. *Nota*: en Android 14 el script SI puede sortearlo gracias a `pm uninstall -k` previo, asi que este error en Android 14 indica un fallo distinto — revisa el log.
 
 ### `adb backup` produce un `.ab` vacio (solo cabecera, 0 datos)
 
@@ -655,16 +683,30 @@ python3 forense_android.py --restore-wa ~/backup_movil/YYYY-MM-DD_XX/whatsapp/ap
 
 ### `wadecrypt: command not found`
 
-Instala `wa-crypt-tools`:
+Instala `wa-crypt-tools` con `pipx` (recomendado, funciona en Ubuntu 24.04+ y derivadas):
+
 ```bash
+sudo apt install pipx -y          # o el equivalente del SO
+pipx ensurepath
+source ~/.bashrc                  # recarga PATH; o cierra y abre la terminal
+pipx install wa-crypt-tools
+which wadecrypt                   # debe imprimir /home/<usuario>/.local/bin/wadecrypt
+```
+
+Alternativas si `pipx` no esta disponible o no encaja:
+
+```bash
+# venv aislado
+python3 -m venv .venv && source .venv/bin/activate && pip install wa-crypt-tools
+
+# Windows (PEP 668 no aplica igual)
+pip install --user wa-crypt-tools
+
+# Distros antiguas sin PEP 668
 pip install wa-crypt-tools
 ```
-Si trabajas en un entorno aislado (PEP 668 en Ubuntu reciente):
-```bash
-pipx install wa-crypt-tools
-# o:
-python3 -m venv venv && source venv/bin/activate && pip install wa-crypt-tools
-```
+
+> Detalles completos por SO en la [seccion Instalacion](#instalacion).
 
 ### El `.crypt15` no se descifra con la clave que te dio el titular
 
